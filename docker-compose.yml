@@ -1,0 +1,76 @@
+services:
+    embedder:
+        build: ./embedder
+        volumes:
+            - ./embedder:/app
+            - known_faces:/app/known_faces
+            - crawled_faces:/app/crawled_faces:ro
+        environment:
+            - QDRANT_HOST=qdrant
+            - QDRANT_PORT=6333
+        depends_on:
+            - qdrant
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          count: 1
+                          capabilities: [gpu]
+        command: ["python3", "embedder_service.py"]
+
+    lookup:
+        build: ./lookup
+        ports:
+            - "5000:5000"
+        volumes:
+            - ./lookup:/app
+            - known_faces:/app/known_faces:ro
+            - crawled_faces:/app/crawled_faces:ro
+        environment:
+            - QDRANT_HOST=qdrant
+            - QDRANT_PORT=6333
+        depends_on:
+            - embedder
+            - qdrant
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          count: 1
+                          capabilities: [gpu]
+
+    crawler:
+        build: ./crawler
+        volumes:
+            - ./crawler:/app
+            - crawled_faces:/app/crawled_faces
+        environment:
+            - START_URL=https://example.com # Replace with your target URL
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          count: 1
+                          capabilities: [gpu]
+
+    qdrant:
+        image: qdrant/qdrant
+        container_name: qdrant
+        restart: unless-stopped
+        environment:
+            - QDRANT__SERVICE__API_KEY=qdrantapikey
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        ports:
+            - 6333:6333
+            - 6334:6334
+        volumes:
+            - qdrant_storage:/qdrant/storage
+
+volumes:
+    known_faces: # Shared volume for known face images
+    crawled_faces: # For storing crawled face images
+    qdrant_storage: # For Qdrant storage
