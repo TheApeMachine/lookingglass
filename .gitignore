@@ -1,0 +1,25 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.env
+
+# Docker build outputs
+*.log
+*.pid
+
+# Data directories
+data/
+known_faces/
+crawled_faces/
+uploads/
+
+# Faiss index and database
+*.faiss
+*.db
+index_to_id.pkl
+
+# Miscellaneous
+.DS_Store
