@@ -3,6 +3,9 @@ from selenium.webdriver.chrome.options import Options
 import time
 import logging
 
+class ProxyAcquisitionError(Exception):
+    pass
+
 class ProxyManager:
     def __init__(self, max_retries=3, timeout=1.0, countries=None):
         self.max_retries = max_retries
@@ -34,7 +37,7 @@ class ProxyManager:
                 time.sleep(1)  # Small delay before retry
         
         # If we get here, we couldn't get a new working proxy
-        raise Exception("Unable to obtain a working proxy after multiple attempts")
+        raise ProxyAcquisitionError("Unable to obtain a working proxy after multiple attempts")
 
     def mark_proxy_failed(self):
         """Mark the current proxy as failed and get a new one."""
@@ -77,4 +80,4 @@ class ProxyManager:
                     self.mark_proxy_failed()
                     time.sleep(1)  # Small delay before retry
                 else:
-                    raise Exception(f"Operation failed after {self.max_retries} attempts with different proxies") 
+                    raise ProxyAcquisitionError(f"Operation failed after {self.max_retries} attempts with different proxies") 
