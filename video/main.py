@@ -115,10 +115,14 @@ class MinioLoader:
     def load(self) -> bytes:
         """Retrieve object data from MinIO."""
         response = self.client.get_object(self.bucket, self.object_name)
-        data = response.read()
+        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(self.object_name)[1], delete=False) as tmp:
+            for chunk in response.stream(1024*1024):  # 1 MiB
+                tmp.write(chunk)
+        local_path = tmp.name
         response.close()
         response.release_conn()
-        return data
+        with open(local_path, "rb") as fh:
+            return fh.read()
 
 
 if __name__ == "__main__":
