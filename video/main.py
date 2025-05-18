@@ -73,13 +73,13 @@ class VideoProcessor:
 
     def transcribe_video(self, path: str) -> str:
         """Extract audio and run ASR on it."""
-        clip = VideoFileClip(path)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            audio_path = tmp.name
-        clip.audio.write_audiofile(audio_path, logger=None)
-        text = asr_model.transcribe_file(audio_path)
-        os.remove(audio_path)
-        clip.close()
+        with VideoFileClip(path) as clip:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                audio_path = tmp.name
+            clip.audio.write_audiofile(audio_path, logger=None)
+            text = asr_model.transcribe_file(audio_path)
+            os.remove(audio_path)
+        return text
         return text
 
     def save_transcription(self, transcription: str) -> None:
