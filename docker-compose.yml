@@ -79,18 +79,14 @@ services:
   minio:
     image: minio/minio
     container_name: minio
-    env_file:
-    - .env
     ports:
     - "9000:9000"
     - "9001:9001"
-    networks:
-    - a2a-network
     extra_hosts:
     - "host.docker.internal:host-gateway"
     environment:
-    - MINIO_ROOT_USER=${MINIO_USER}
-    - MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}
+    - MINIO_ROOT_USER=miniouser
+    - MINIO_ROOT_PASSWORD=miniopassword
     command: server /data --console-address ":9001"
     volumes:
     - minio_data:/data

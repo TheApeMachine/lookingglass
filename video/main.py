@@ -59,23 +59,15 @@ class VideoProcessor:
             if not ret:
                 break
             if frame_idx % 30 == 0:  # Sample every 30th frame
--               temp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
--               cv2.imwrite(temp.name, frame)
--               try:
--                   faces = RetinaFace.detect_faces(temp.name)
--                   if faces and isinstance(faces, dict):
--                       faces_total += len(faces)
--               finally:
--                   os.unlink(temp.name)
-+               with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_img:
-+                   pass  # close handle so OpenCV can write
-+               cv2.imwrite(tmp_img.name, frame)
-+               try:
-+                   faces = RetinaFace.detect_faces(tmp_img.name)
-+                   if faces and isinstance(faces, dict):
-+                       faces_total += len(faces)
-+               finally:
-+                   os.unlink(tmp_img.name)
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_img:
+                    pass  # close handle so OpenCV can write
+                cv2.imwrite(tmp_img.name, frame)
+                try:
+                    faces = RetinaFace.detect_faces(tmp_img.name)
+                    if faces and isinstance(faces, dict):
+                        faces_total += len(faces)
+                finally:
+                    os.unlink(tmp_img.name)
             frame_idx += 1
         cap.release()
         return faces_total
@@ -88,7 +80,6 @@ class VideoProcessor:
             clip.audio.write_audiofile(audio_path, logger=None)
             text = asr_model.transcribe_file(audio_path)
             os.remove(audio_path)
-        return text
         return text
 
     def save_transcription(self, transcription: str) -> None:

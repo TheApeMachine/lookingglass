@@ -1,9 +1,12 @@
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+# ---- Builder Stage ----
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS builder
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install build dependencies for Python, Chrome, and ChromeDriver
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
+    python3-venv \
+    python3-dev \
     cmake \
     build-essential \
     libopenblas-dev \
@@ -14,33 +17,67 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     unzip \
     curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Chrome
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    # Add Google Chrome repository for the builder stage
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    # Update after adding new repo, then install chrome
+    && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ChromeDriver
-RUN CHROME_VERSION=$(google-chrome --version | awk '{ print $3 }' | cut -d'.' -f1) \
-    && CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}") \
-    && curl -Lo /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" \
+RUN CHROME_MAJOR_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1) \
+    && echo "Detected Chrome major version: $CHROME_MAJOR_VERSION" \
+    && CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_MAJOR_VERSION}") \
+    && echo "Using ChromeDriver version: $CHROMEDRIVER_VERSION" \
+    && curl -Lo /tmp/chromedriver.zip "https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-linux64.zip" \
     && unzip /tmp/chromedriver.zip -d /usr/local/bin/ \
-    && rm /tmp/chromedriver.zip \
+    && rm -rf /tmp/chromedriver.zip \
+    && mv /usr/local/bin/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
+    && rm -rf /usr/local/bin/chromedriver-linux64 \
     && chmod +x /usr/local/bin/chromedriver
+
+# Create and activate virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Install Python packages
 COPY requirements.txt /app/requirements.txt
 WORKDIR /app
-
 RUN pip3 install --no-cache-dir -r requirements.txt
+
+# ---- Final Stage ----
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+# Install runtime dependencies including Google Chrome
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-dev \
+    libopenblas0 \
+    liblapack3 \
+    libx11-6 \
+    libgtk-3-0 \
+    wget \
+    gnupg \
+    # Add google chrome source and install
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy ChromeDriver from builder stage
+COPY --from=builder /usr/local/bin/chromedriver /usr/local/bin/chromedriver
+
+# Copy virtual environment from builder stage
+COPY --from=builder /opt/venv /opt/venv
 
 # Copy application code
 COPY . /app/
+WORKDIR /app
 
 # Create directory for downloaded faces
 RUN mkdir -p /app/crawled_faces
+
+# Set PATH to use the virtual environment
+ENV PATH="/opt/venv/bin:$PATH"
 
 CMD ["python3", "crawler.py"]
