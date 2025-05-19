@@ -9,6 +9,7 @@ retina-face==0.0.17
 opencv-python-headless==4.9.0.80
 deepface==0.0.79
 tensorflow==2.15.0
+tf-keras==2.15.0
 mtcnn==0.1.1
 scikit-image==0.22.0
 torch==2.2.1

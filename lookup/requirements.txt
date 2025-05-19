@@ -6,6 +6,7 @@ flask==3.0.2
 retina-face==0.0.17
 opencv-python-headless==4.9.0.80
 tensorflow==2.15.0
+tf-keras==2.15.0
 torch==2.2.1
 selenium==4.18.1
 requests==2.31.0

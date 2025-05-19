@@ -3,3 +3,5 @@ opencv-python-headless==4.9.0.80
 moviepy==1.0.3
 speechbrain==0.5.15
 minio==7.1.15
+tensorflow==2.15.0
+tf-keras==2.15.0
