@@ -1,7 +1,6 @@
-retina-face==0.0.17
-opencv-python-headless==4.9.0.80
-moviepy==1.0.3
-speechbrain==0.5.15
-minio==7.1.15
-tensorflow==2.15.0
-tf-keras==2.15.0
+retina-face
+opencv-python-headless
+moviepy
+speechbrain
+minio
+tensorflow
