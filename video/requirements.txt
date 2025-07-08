@@ -1,6 +1,8 @@
 retina-face
 opencv-python-headless
-moviepy
+moviepy==1.0.3
+imageio
+imageio-ffmpeg
 speechbrain
 minio
 tensorflow

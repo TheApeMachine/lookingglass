@@ -1,9 +1,12 @@
 # ---- Builder Stage ----
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS builder
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Install build dependencies for Python, Chrome, and ChromeDriver
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
+    python3.10 \
+    python3.10-venv \
     python3-pip \
     python3-dev \
     cmake \
@@ -35,7 +38,11 @@ RUN CHROME_MAJOR_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.
     && rm -rf /usr/local/bin/chromedriver-linux64 \
     && chmod +x /usr/local/bin/chromedriver
 
-# Install Python packages
+# Create and activate a virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install Python packages into the venv
 COPY requirements.txt /app/requirements.txt
 WORKDIR /app
 RUN pip install --no-cache-dir -r requirements.txt && \
@@ -44,10 +51,9 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 # ---- Final Stage ----
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
-# Install runtime dependencies including Google Chrome
-RUN apt-get update && apt-get install -y \
+# Install only runtime dependencies including Google Chrome
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
-    python3-dev \
     libopenblas0 \
     liblapack3 \
     libx11-6 \
@@ -57,17 +63,20 @@ RUN apt-get update && apt-get install -y \
     # Add google chrome source and install
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
     && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
-    && apt-get update && apt-get install -y google-chrome-stable \
+    && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy ChromeDriver from builder stage
+# Copy ChromeDriver and the Python venv from builder stage
 COPY --from=builder /usr/local/bin/chromedriver /usr/local/bin/chromedriver
-# Copy the pip packages from builder stage
-COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+COPY --from=builder /opt/venv /opt/venv
 
 # Copy application code
 COPY . /app/
 WORKDIR /app
+
+# Add the venv to the PATH and set python unbuffered
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
 
 # Create directory for downloaded faces
 RUN mkdir -p /app/crawled_faces

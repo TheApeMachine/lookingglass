@@ -21,7 +21,7 @@ class FaceCrawler:
         self.max_pages = max_pages
         self.visited_urls = set()
         self.url_queue = [start_url]
-        self.proxy_manager = ProxyManager(max_retries=3, timeout=5.0)
+        self.proxy_manager = ProxyManager(max_retries=5, timeout=2.0)
         self.setup_logging()
         self.setup_output_dir()
 
@@ -42,6 +42,7 @@ class FaceCrawler:
         chrome_options.add_argument("--disable-dev-shm-usage")
         
         # Configure proxy
+        self.proxy_manager.get_new_proxy()
         chrome_options = self.proxy_manager.configure_chrome_options(chrome_options)
         
         self.driver = webdriver.Chrome(options=chrome_options)
@@ -77,51 +78,59 @@ class FaceCrawler:
 
     def download_image(self, image_url, source_url):
         """Download an image and check if it contains faces using RetinaFace."""
-        def _download():
-            response = requests.get(
-                image_url, 
-                timeout=10,
-                proxies={'http': self.proxy_manager.current_proxy, 'https': self.proxy_manager.current_proxy}
-            )
-            if response.status_code != 200:
-                raise Exception(f"Failed to download image: HTTP {response.status_code}")
-            return response.content
-
-        try:
-            # Download image with retry logic
-            image_content = self.proxy_manager.with_retry(_download)
-
-            # Generate a filename from the URL
-            image_name = os.path.basename(urlparse(image_url).path)
-            if not image_name:
-                image_name = f"image_{hash(image_url)}.jpg"
-
-            # Create temporary file to check for faces
-            temp_path = os.path.join(self.output_dir, "temp_" + image_name)
-            with open(temp_path, 'wb') as f:
-                f.write(image_content)
-
-            # Check for faces using RetinaFace
+        retries = 0
+        while retries <= self.proxy_manager.max_retries:
             try:
-                faces = RetinaFace.detect_faces(temp_path)
+                proxies = {'http': self.proxy_manager.current_proxy, 'https': self.proxy_manager.current_proxy} if self.proxy_manager.current_proxy else None
+                response = requests.get(image_url, timeout=10, proxies=proxies)
+                response.raise_for_status() # Raise an exception for bad status codes
                 
-                if faces and isinstance(faces, dict):  # RetinaFace found faces
-                    permanent_path = self.make_path_from_url(source_url, image_name)
-                    os.rename(temp_path, permanent_path)
-                    self.logger.info(f"Found {len(faces)} face(s) in {image_url}")
-                    return permanent_path
-                else:
-                    os.remove(temp_path)
-                    return None
-            except Exception as e:
-                self.logger.error(f"Error processing image {image_url}: {e}")
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                return None
+                image_content = response.content
 
-        except Exception as e:
-            self.logger.error(f"Error downloading {image_url}: {e}")
-            return None
+                # Generate a filename from the URL
+                image_name = os.path.basename(urlparse(image_url).path)
+                if not image_name:
+                    image_name = f"image_{hash(image_url)}.jpg"
+
+                # Create temporary file to check for faces
+                temp_path = os.path.join(self.output_dir, "temp_" + image_name)
+                with open(temp_path, 'wb') as f:
+                    f.write(image_content)
+
+                # Check for faces using RetinaFace
+                try:
+                    faces = RetinaFace.detect_faces(temp_path)
+                    
+                    if faces and isinstance(faces, dict):  # RetinaFace found faces
+                        permanent_path = self.make_path_from_url(source_url, image_name)
+                        os.rename(temp_path, permanent_path)
+                        self.logger.info(f"Found {len(faces)} face(s) in {image_url}")
+                        return permanent_path
+                    else:
+                        os.remove(temp_path)
+                        self.logger.info(f"No faces found in {image_url}, deleting temp file.")
+                        return None
+                except Exception as e:
+                    self.logger.error(f"Error processing image {image_url}: {e}")
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                        self.logger.info(f"Error processing {image_url}, deleting temp file.")
+                    return None
+                
+                return # Success
+            
+            except requests.exceptions.RequestException as e:
+                self.logger.warning(f"Error downloading {image_url} with proxy {self.proxy_manager.current_proxy}: {e}")
+                retries += 1
+                if self.proxy_manager.current_proxy:
+                    self.proxy_manager.mark_proxy_failed()
+                else:
+                    # If it fails without a proxy, no point retrying.
+                    break
+
+        self.logger.error(f"Failed to download {image_url} after multiple attempts.")
+        return None
+
 
     def get_page_links(self, current_url):
         """Extract all links from the current page."""
@@ -143,11 +152,7 @@ class FaceCrawler:
             
             return links
 
-        try:
-            return self.proxy_manager.with_retry(_get_links)
-        except Exception as e:
-            self.logger.error(f"Error getting links from {current_url}: {e}")
-            return set()
+        return self._execute_with_retry(_get_links)
 
     def get_page_images(self, current_url):
         """Extract all image URLs from the current page."""
@@ -167,11 +172,28 @@ class FaceCrawler:
             
             return images
 
-        try:
-            return self.proxy_manager.with_retry(_get_images)
-        except Exception as e:
-            self.logger.error(f"Error getting images from {current_url}: {e}")
-            return set()
+        return self._execute_with_retry(_get_images)
+
+    def _execute_with_retry(self, func):
+        """Execute a Selenium function with retry logic for proxy failures."""
+        retries = 0
+        while retries <= self.proxy_manager.max_retries:
+            try:
+                return func()
+            except (TimeoutException, WebDriverException) as e:
+                self.logger.warning(f"Selenium error with proxy {self.proxy_manager.current_proxy}: {e}")
+                retries += 1
+                if self.proxy_manager.current_proxy:
+                    self.driver.quit()
+                    self.proxy_manager.mark_proxy_failed()
+                    self.setup_browser() # Re-setup browser with new proxy
+                else:
+                    self.logger.error("Selenium operation failed without a proxy. Not retrying.")
+                    return None # Or return empty set/list depending on the caller
+
+        self.logger.error(f"Selenium operation failed after {self.proxy_manager.max_retries} attempts.")
+        return None
+
 
     def crawl(self):
         """Main crawling method."""
@@ -186,17 +208,17 @@ class FaceCrawler:
                 self.logger.info(f"\nVisiting {current_url}")
                 
                 try:
-                    # Setup browser with new proxy
+                    # Setup browser
                     self.setup_browser()
                     
-                    def _load_page(url):
-                        self.driver.get(url)
+                    def _load_page():
+                        self.driver.get(current_url)
                         WebDriverWait(self.driver, 10).until(
                             EC.presence_of_element_located((By.TAG_NAME, "body"))
                         )
                     
                     # Load page with retry logic
-                    self.proxy_manager.with_retry(_load_page, current_url)
+                    self._execute_with_retry(_load_page)
                     
                     # Mark as visited
                     self.visited_urls.add(current_url)
@@ -232,6 +254,6 @@ class FaceCrawler:
             self.logger.info(f"Found faces are saved in {self.output_dir}")
 
 if __name__ == "__main__":
-    START_URL = os.getenv("START_URL", "https://example.com")
+    START_URL = os.getenv("START_URL", "https://www.southpole.com/about-us/our-leadership-team")
     crawler = FaceCrawler(START_URL, output_dir="crawled_faces", max_pages=100)
     crawler.crawl() 

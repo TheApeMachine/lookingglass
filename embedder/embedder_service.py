@@ -26,8 +26,9 @@ class ImageProcessor:
     def setup_qdrant(self):
         host = os.getenv("QDRANT_HOST", "localhost")
         port = int(os.getenv("QDRANT_PORT", "6333"))
+        api_key = os.getenv("QDRANT_API_KEY")
         
-        self.qdrant = QdrantClient(host=host, port=port)
+        self.qdrant = QdrantClient(host=host, port=port, api_key=api_key, https=False)
         
         # Check if collection exists, if not create it
         try:
@@ -44,6 +45,11 @@ class ImageProcessor:
     def process_image(self, image_path):
         """Process an image to extract face embeddings using RetinaFace and face_recognition."""
         try:
+            # Check if the file still exists before processing
+            if not os.path.exists(image_path):
+                self.logger.warning(f"Image {image_path} removed before processing, skipping.")
+                return
+
             # Check if image has already been processed
             image_hash = str(hash(image_path))
             search_result = self.qdrant.scroll(
@@ -64,9 +70,14 @@ class ImageProcessor:
                 return
 
             # Detect faces using RetinaFace
-            faces = RetinaFace.detect_faces(image_path)
-            
-            if not faces:
+            try:
+                faces = RetinaFace.detect_faces(image_path)
+            except Exception as e:
+                # This can happen for corrupted images
+                self.logger.error(f"Could not analyze image {image_path} with RetinaFace: {e}")
+                return
+
+            if not isinstance(faces, dict):
                 self.logger.warning(f"No faces detected in {image_path}")
                 return
 
@@ -74,50 +85,58 @@ class ImageProcessor:
             image = face_recognition.load_image_file(image_path)
             
             # Process each face
-            for face_idx, (face_key, face_data) in enumerate(faces.items()):
+            for idx, (face_key, face_data) in enumerate(faces.items()):
                 try:
                     # Get face location from RetinaFace
                     x1, y1, x2, y2 = face_data['facial_area']
-                    face_location = (int(y1), int(x2), int(y2), int(x1))  # Convert to face_recognition format
+                    # Some basic validation on coordinates
+                    if x1 > x2 or y1 > y2:
+                        self.logger.warning(f"Invalid facial area coordinates for face {idx} in {image_path}. Skipping.")
+                        continue
                     
-                    # Extract aligned face using RetinaFace
-                    aligned_face = RetinaFace.extract_faces(
-                        img_path=image_path,
-                        align=True,
-                        face_idx=face_idx
-                    )[0]
+                    face_location = (int(y1), int(x2), int(y2), int(x1))
+
+                    # Use face_recognition to get encodings from the whole image,
+                    # constrained to the detected face location.
+                    # This is more robust than relying on RetinaFace's alignment.
+                    face_encodings = face_recognition.face_encodings(image, known_face_locations=[face_location])
+
+                    if not face_encodings:
+                        self.logger.warning(f"Could not get encoding for face {idx} at {face_location} in {image_path}. Skipping.")
+                        continue
+
+                    face_encoding = face_encodings[0]
                     
-                    # Convert aligned face to format needed by face_recognition
-                    aligned_face = np.array(aligned_face)
-                    
-                    # Get face encoding
-                    face_encoding = face_recognition.face_encodings(aligned_face)[0]
+                    # Convert numpy types in landmarks for JSON serialization
+                    landmarks = {k: [float(v[0]), float(v[1])] for k, v in face_data['landmarks'].items()}
                     
                     # Store in Qdrant
                     self.qdrant.upsert(
                         collection_name='faces',
                         points=[
                             models.PointStruct(
-                                id=hash(f"{image_path}_{face_idx}"),
+                                id=hash(f"{image_path}_{idx}"),
                                 vector=face_encoding.tolist(),
                                 payload={
                                     "image_path": image_path,
-                                    "face_location": face_location,
+                                    "face_location": [int(y1), int(x2), int(y2), int(x1)],
                                     "confidence": float(face_data['score']),
-                                    "landmarks": face_data['landmarks'],
-                                    "face_idx": face_idx,
+                                    "landmarks": landmarks,
+                                    "face_idx": idx,
                                     "processed_timestamp": time.time()
                                 }
                             )
                         ]
                     )
                     
-                    self.logger.info(f"Processed face {face_idx + 1} from {image_path}")
+                    self.logger.info(f"Processed face {idx + 1} from {image_path}")
                 
                 except Exception as e:
-                    self.logger.error(f"Error processing face {face_idx} in {image_path}: {e}")
+                    self.logger.error(f"Error processing face {idx} in {image_path}: {e}")
                     continue
 
+        except FileNotFoundError:
+            self.logger.warning(f"Image {image_path} was not found. It may have been deleted.")
         except Exception as e:
             self.logger.error(f"Error processing image {image_path}: {e}")
 

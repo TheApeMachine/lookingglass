@@ -2,12 +2,12 @@ services:
   embedder:
     build: ./embedder
     volumes:
-    - ./embedder:/app
-    - known_faces:/app/known_faces
-    - crawled_faces:/app/crawled_faces:ro
+    - ./embedder/known_faces:/app/known_faces
+    - ./crawler/crawled_faces:/app/crawled_faces:ro
     environment:
     - QDRANT_HOST=qdrant
     - QDRANT_PORT=6333
+    - QDRANT_API_KEY=qdrantapikey
     depends_on:
     - qdrant
     deploy:
@@ -17,16 +17,14 @@ services:
           - driver: nvidia
             count: 1
             capabilities: [ gpu ]
-    command: [ "python3", "embedder_service.py" ]
 
   lookup:
     build: ./lookup
     ports:
     - "5000:5000"
     volumes:
-    - ./lookup:/app
-    - known_faces:/app/known_faces:ro
-    - crawled_faces:/app/crawled_faces:ro
+    - ./embedder/known_faces:/app/known_faces:ro
+    - ./crawler/crawled_faces:/app/crawled_faces:ro
     environment:
     - QDRANT_HOST=qdrant
     - QDRANT_PORT=6333
@@ -44,10 +42,9 @@ services:
   crawler:
     build: ./crawler
     volumes:
-    - ./crawler:/app
-    - crawled_faces:/app/crawled_faces
+    - ./crawler/crawled_faces:/app/crawled_faces
     environment:
-    - START_URL=https://example.com # Replace with your target URL
+    - START_URL=https://www.southpole.com/about-us/our-leadership-team
     deploy:
       resources:
         reservations:
@@ -59,9 +56,8 @@ services:
   video:
     build: ./video
     volumes:
-    - ./video:/app
-    - crawled_faces:/app/crawled_faces:ro
-    - transcriptions:/app/transcriptions
+    - ./crawler/crawled_faces:/app/crawled_faces:ro
+    - ./crawler/transcriptions:/app/transcriptions
     environment:
     - MINIO_ENDPOINT=minio:9000
     - MINIO_USER=${MINIO_USER}
@@ -106,8 +102,5 @@ services:
     - qdrant_storage:/qdrant/storage
 
 volumes:
-  known_faces: # Shared volume for known face images
-  crawled_faces: # For storing crawled face images
-  qdrant_storage: # For Qdrant storage
+  qdrant_storage:
   minio_data:
-  transcriptions:

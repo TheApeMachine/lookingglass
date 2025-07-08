@@ -12,13 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblapack-dev \
     libx11-dev \
     libgtk-3-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages
 COPY requirements.txt /app/requirements.txt
 WORKDIR /app
 RUN pip install --no-cache-dir -r requirements.txt && \
-    rm -rf ~/.cache/pip
+    pip install --no-cache-dir git+https://github.com/ageitgey/face_recognition_models
 
 # ---- Final Stage ----
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
@@ -26,6 +27,7 @@ FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 # Install only runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
+    python3-pip \
     python3-dev \
     libopenblas0 \
     liblapack3 \

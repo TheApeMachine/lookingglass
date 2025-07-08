@@ -10,3 +10,4 @@ retina-face
 opencv-python-headless
 tensorflow
 torch
+tf-keras
