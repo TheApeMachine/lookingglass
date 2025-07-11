@@ -1,48 +1,21 @@
-# ---- Builder Stage ----
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS builder
+# Use a lightweight official Python image
+FROM python:3.10-slim-bullseye
 
-# Install build dependencies including python3-venv
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-dev \
-    cmake \
-    build-essential \
-    libopenblas-dev \
-    liblapack-dev \
-    libx11-dev \
-    libgtk-3-dev \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python packages
-COPY requirements.txt /app/requirements.txt
-WORKDIR /app
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir git+https://github.com/ageitgey/face_recognition_models
-
-# ---- Final Stage ----
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
-
-# Install only runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-dev \
-    libopenblas0 \
-    liblapack3 \
-    libx11-6 \
-    libgtk-3-0 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
-
-COPY . /app/
+# Set the working directory
 WORKDIR /app
 
-# Create necessary directories in the final image
+# Copy the requirements file and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the application code
+COPY . .
+
+# Create necessary directories
 RUN mkdir -p /app/uploads /app/data
 
+# Expose the port the app runs on
 EXPOSE 5000
 
+# Set the command to run the web app
 CMD ["python3", "web_app.py"]

@@ -1,0 +1,22 @@
+flask
+gunicorn
+face_recognition
+faiss-gpu
+numpy
+pillow
+retina-face
+opencv-python-headless
+# tensorflow==2.13.0
+tf-keras
+# torch
+moviepy
+imageio
+imageio-ffmpeg
+speechbrain
+werkzeug
+qdrant-client
+watchdog
+minio
+rq
+redis
+wheel
