@@ -1,7 +1,7 @@
 services:
   rq-worker-1:
     build: ./gpu-service
-    command: rq worker --url redis://redis:6379 --name facial_recognition_gpu1 --with-scheduler
+    command: ["rq", "worker", "--url", "redis://redis:6379", "--name", "facial_recognition_gpu1", "--with-scheduler"]
     environment:
       - REDIS_URL=redis://redis:6379
       - MINIO_ENDPOINT=minio:9000
@@ -29,7 +29,7 @@ services:
 
   rq-worker-2:
     build: ./gpu-service
-    command: rq worker --url redis://redis:6379 --name facial_recognition_gpu2 --with-scheduler
+    command: ["rq", "worker", "--url", "redis://redis:6379", "--name", "facial_recognition_gpu2", "--with-scheduler"]
     environment:
       - REDIS_URL=redis://redis:6379
       - MINIO_ENDPOINT=minio:9000
@@ -56,45 +56,45 @@ services:
               capabilities: [gpu]
 
   # Additional workers for high-memory system
-  rq-worker-3:
-    build: ./gpu-service
-    command: rq worker --url redis://redis:6379 --name facial_recognition_cpu1 --with-scheduler
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-      - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-      - MINIO_BUCKET=scraped
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - QDRANT_API_KEY=qdrantapikey
-      - QUEUE_NAMES=facial_recognition
-    volumes:
-      - ./transcriptions:/app/transcriptions
-    depends_on:
-      - redis
-      - minio
-      - qdrant
+  # rq-worker-3:
+  #   build: ./gpu-service
+  #   command: rq worker --url redis://redis:6379 --name facial_recognition_cpu1 --with-scheduler
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379
+  #     - MINIO_ENDPOINT=minio:9000
+  #     - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
+  #     - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
+  #     - MINIO_BUCKET=scraped
+  #     - QDRANT_HOST=qdrant
+  #     - QDRANT_PORT=6333
+  #     - QDRANT_API_KEY=qdrantapikey
+  #     - QUEUE_NAMES=facial_recognition
+  #   volumes:
+  #     - ./transcriptions:/app/transcriptions
+  #   depends_on:
+  #     - redis
+  #     - minio
+  #     - qdrant
 
-  rq-worker-4:
-    build: ./gpu-service
-    command: rq worker --url redis://redis:6379 --name facial_recognition_cpu2 --with-scheduler
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-      - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-      - MINIO_BUCKET=scraped
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - QDRANT_API_KEY=qdrantapikey
-      - QUEUE_NAMES=facial_recognition
-    volumes:
-      - ./transcriptions:/app/transcriptions
-    depends_on:
-      - redis
-      - minio
-      - qdrant
+  # rq-worker-4:
+  #   build: ./gpu-service
+  #   command: rq worker --url redis://redis:6379 --name facial_recognition_cpu2 --with-scheduler
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379
+  #     - MINIO_ENDPOINT=minio:9000
+  #     - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
+  #     - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
+  #     - MINIO_BUCKET=scraped
+  #     - QDRANT_HOST=qdrant
+  #     - QDRANT_PORT=6333
+  #     - QDRANT_API_KEY=qdrantapikey
+  #     - QUEUE_NAMES=facial_recognition
+  #   volumes:
+  #     - ./transcriptions:/app/transcriptions
+  #   depends_on:
+  #     - redis
+  #     - minio
+  #     - qdrant
 
   gpu-service:
     build: ./gpu-service
@@ -112,6 +112,7 @@ services:
     depends_on:
       - qdrant
       - minio
+    restart: unless-stopped
     deploy:
       resources:
         reservations:
@@ -131,12 +132,11 @@ services:
     depends_on:
       - gpu-service
 
-  image-crawler:
+  crawler1:
     build: ./crawler
     # This service no longer needs to mount a volume, as all data goes to MinIO
     environment:
-      - CRAWL_MODE=image
-      - START_URL=https://www.flickr.com/search/?text=people/
+      - START_URL=https://southpole.com
       - MINIO_ENDPOINT=minio:9000
       - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
       - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
@@ -146,11 +146,10 @@ services:
     restart: unless-stopped
     # Single crawler with smart concurrency management
 
-  video-crawler:
+  crawler2:
     build: ./crawler
     environment:
-      - CRAWL_MODE=video
-      - START_URL=https://archive.org/details/movies
+      - START_URL=https://verra.org
       - MINIO_ENDPOINT=minio:9000
       - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
       - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}

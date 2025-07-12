@@ -1,9 +1,10 @@
 import os
+import io
+import time
 from urllib.parse import urlparse
 from minio import Minio
 from itemadapter import ItemAdapter
-import requests
-import time
+import scrapy
 
 class MinioMediaPipeline:
     """
@@ -36,28 +37,33 @@ class MinioMediaPipeline:
             spider.logger.error(f"❌ MinIO bucket error: {e}")
 
     def process_item(self, item, spider):
-        self.items_processed += 1
-        
         adapter = ItemAdapter(item)
         media_urls = adapter.get('media_urls', [])
         
         if not media_urls:
             return item
             
+        # We only process the first media URL, to keep consistency with previous implementation.
         media_url = media_urls[0]
+        
+        request = scrapy.Request(media_url)
+        dfd = spider.crawler.engine.download(request)
+        dfd.addCallback(self.media_downloaded, item=item, spider=spider)
+        dfd.addErrback(self.media_failed, item=item, media_url=media_url, spider=spider)
+        return dfd
+
+    def media_downloaded(self, response, item, spider):
+        """
+        This method is called when the media is successfully downloaded.
+        It uploads the media to MinIO.
+        """
+        self.items_processed += 1
+        media_url = response.url
+        adapter = ItemAdapter(item)
         is_video = adapter.get('is_video', False)
         source_url = adapter.get('source_url', '')
         
         try:
-            response = requests.get(
-                media_url, 
-                stream=True, 
-                timeout=120,  # Longer timeout for large files
-                allow_redirects=True,
-                headers={'User-Agent': 'Mozilla/5.0 (compatible; LookingGlass-Crawler)'}
-            )
-            response.raise_for_status()
-
             # Create a unique object name with prefix
             file_ext = os.path.splitext(urlparse(media_url).path)[1] or ('.mp4' if is_video else '.jpg')
             object_base_name = str(abs(hash(media_url)))  # Use abs to avoid negative numbers
@@ -73,13 +79,16 @@ class MinioMediaPipeline:
             }
             
             # Upload the media content with metadata - larger part size for better performance
+            content_type_bytes = response.headers.get('Content-Type', b'application/octet-stream')
+            content_type = content_type_bytes.decode('utf-8')
+            
             self.minio_client.put_object(
                 self.bucket,
                 object_name,
-                response.raw,
-                length=-1,
+                io.BytesIO(response.body),
+                length=len(response.body),
                 part_size=50*1024*1024,  # 50MB parts for better performance with large files
-                content_type=response.headers.get('Content-Type', 'application/octet-stream'),
+                content_type=content_type,
                 metadata=metadata
             )
             
@@ -87,11 +96,16 @@ class MinioMediaPipeline:
             if self.items_processed % 5 == 0:
                 spider.logger.warning(f"✅ Uploaded {self.items_processed} items (latest: {object_name})")
 
-        except requests.RequestException as e:
-            spider.logger.error(f"❌ Download failed {media_url}: {e}")
         except Exception as e:
             spider.logger.error(f"❌ Upload failed {media_url}: {e}")
         
+        return item
+
+    def media_failed(self, failure, item, media_url, spider):
+        """
+        This method is called when the media download fails.
+        """
+        spider.logger.error(f"❌ Download failed {media_url}: {failure.getErrorMessage()}")
         return item
     
     def close_spider(self, spider):

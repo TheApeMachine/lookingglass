@@ -16,7 +16,6 @@ DOWNLOAD_HANDLERS = {
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
 # --- Custom Settings ---
-CRAWL_MODE = os.getenv('CRAWL_MODE', 'image')
 START_URL = os.getenv('START_URL', 'https://www.flickr.com/search/?text=people/')
 
 # --- MinIO Settings ---
@@ -72,9 +71,6 @@ REDIRECT_ENABLED = True
 
 # Enhanced memory settings - no limits with 1TB RAM
 MEMUSAGE_ENABLED = False  # Disable memory monitoring entirely
-
-# Large reactor thread pool for high concurrency
-REACTOR_THREADPOOL_MAXSIZE = 32  # Still high but more reasonable
 
 # Enable response caching for better performance
 HTTPCACHE_ENABLED = True

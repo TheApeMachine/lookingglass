@@ -2,12 +2,24 @@ import os
 import logging
 import tempfile
 import cv2
+import hashlib
+import numpy as np
 from minio import Minio
 import face_recognition
 from retinaface import RetinaFace
 from moviepy import VideoFileClip
 from speechbrain.inference import EncoderDecoderASR
 from qdrant_client import QdrantClient, models
+
+# Add compatibility fixes for TensorFlow/Keras
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
+# Fix for TensorFlow/Keras compatibility
+import tensorflow as tf
+if hasattr(tf, 'compat'):
+    tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +53,43 @@ _asr_model = None
 def get_asr_model():
     global _asr_model
     if _asr_model is None:
-        logger.info("Loading ASR model...")
-        _asr_model = EncoderDecoderASR.from_hparams(
-            source="speechbrain/asr-conformer-transformerlm-librispeech",
-            savedir="pretrained_models/asr-transformer-transformerlm-librispeech",
-        )
-        logger.info("ASR model loaded.")
+        try:
+            logger.info("Loading ASR model...")
+            _asr_model = EncoderDecoderASR.from_hparams(
+                source="speechbrain/asr-conformer-transformerlm-librispeech",
+                savedir="pretrained_models/asr-transformer-transformerlm-librispeech",
+            )
+            logger.info("ASR model loaded.")
+        except Exception as e:
+            logger.error(f"Failed to load ASR model: {str(e)}")
+            _asr_model = None
     return _asr_model
+
+def safe_detect_faces(image_rgb, retry_count=3):
+    """
+    Safely detect faces with error handling for TensorFlow/Keras compatibility issues.
+    """
+    for attempt in range(retry_count):
+        try:
+            faces = RetinaFace.detect_faces(image_rgb)
+            return faces
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "padding" in error_msg and "valid" in error_msg:
+                logger.warning(f"Padding compatibility issue detected (attempt {attempt + 1}): {e}")
+                if attempt < retry_count - 1:
+                    # Try to clear any cached models/sessions
+                    try:
+                        import gc
+                        gc.collect()
+                        if hasattr(tf, 'keras'):
+                            tf.keras.backend.clear_session()
+                    except:
+                        pass
+                    continue
+            logger.error(f"Face detection failed after {attempt + 1} attempts: {e}")
+            break
+    return None
 
 def process_image_upload(bucket_name, object_name, event_data=None):
     """
@@ -73,28 +115,35 @@ def process_image_upload(bucket_name, object_name, event_data=None):
             logger.info(f"No metadata found for {object_name}: {e}")
             metadata = {}
         
-        # Process image with face recognition
-        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(object_name)[1], delete=True) as tmp_image:
-            tmp_image.write(image_bytes)
-            tmp_image.flush()
+        # Process image with face recognition in-memory
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-            image = face_recognition.load_image_file(tmp_image.name)
-            faces = RetinaFace.detect_faces(tmp_image.name)
+        if image is None:
+            logger.error(f"Could not decode image {object_name}")
+            return {"status": "error", "error": f"Could not decode image {object_name}"}
 
-            if not isinstance(faces, dict):
-                logger.info(f"No faces detected in {object_name}")
-                return {"status": "success", "message": "No faces detected"}
+        # Convert from BGR (OpenCV default) to RGB
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Use safe face detection with error handling
+        faces = safe_detect_faces(image_rgb)
 
-            points_to_upsert = []
-            for idx, (face_key, face_data) in enumerate(faces.items()):
+        if not isinstance(faces, dict) or faces is None:
+            logger.info(f"No faces detected in {object_name}")
+            return {"status": "success", "message": "No faces detected"}
+
+        points_to_upsert = []
+        for idx, (face_key, face_data) in enumerate(faces.items()):
+            try:
                 x1, y1, x2, y2 = face_data['facial_area']
                 face_location = (int(y1), int(x2), int(y2), int(x1))
-                face_encodings = face_recognition.face_encodings(image, [face_location])
+                face_encodings = face_recognition.face_encodings(image_rgb, [face_location])
 
                 if face_encodings:
                     landmarks = {k: [float(v[0]), float(v[1])] for k, v in face_data['landmarks'].items()}
                     point = models.PointStruct(
-                        id=hash(f"{object_name}_{idx}"),
+                        id=hashlib.sha1(f"{object_name}_{idx}".encode()).hexdigest(),
                         vector=face_encodings[0].tolist(),
                         payload={
                             "bucket": bucket_name,
@@ -108,14 +157,17 @@ def process_image_upload(bucket_name, object_name, event_data=None):
                         }
                     )
                     points_to_upsert.append(point)
-            
-            if points_to_upsert:
-                qdrant.upsert(collection_name='faces', points=points_to_upsert, wait=True)
-                msg = f"Upserted {len(points_to_upsert)} faces from {object_name}"
-                logger.info(msg)
-                return {"status": "success", "result": msg}
-            else:
-                return {"status": "success", "message": "No face encodings generated"}
+            except Exception as e:
+                logger.warning(f"Failed to process face {idx} in {object_name}: {e}")
+                continue
+        
+        if points_to_upsert:
+            qdrant.upsert(collection_name='faces', points=points_to_upsert, wait=True)
+            msg = f"Upserted {len(points_to_upsert)} faces from {object_name}"
+            logger.info(msg)
+            return {"status": "success", "result": msg}
+        else:
+            return {"status": "success", "message": "No face encodings generated"}
 
     except Exception as e:
         logger.error(f"Error processing image {object_name}: {str(e)}")
@@ -149,14 +201,15 @@ def process_video_upload(bucket_name, object_name, event_data=None):
             if not ret: 
                 break
             if frame_count % frame_interval == 0:
-                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_frame:
-                    cv2.imwrite(tmp_frame.name, frame)
-                    try:
-                        faces = RetinaFace.detect_faces(tmp_frame.name)
-                        if isinstance(faces, dict):
-                            faces_total += len(faces)
-                    finally:
-                        os.unlink(tmp_frame.name)
+                try:
+                    # Convert from BGR (OpenCV default) to RGB and process in-memory
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    faces = safe_detect_faces(frame_rgb)
+                    if isinstance(faces, dict) and faces is not None:
+                        faces_total += len(faces)
+                except Exception as e:
+                    logger.warning(f"Could not process a frame from {object_name}: {e}")
+
             frame_count += 1
         cap.release()
 
@@ -168,7 +221,8 @@ def process_video_upload(bucket_name, object_name, event_data=None):
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_audio:
                         clip.audio.write_audiofile(tmp_audio.name, logger=None)
                         asr_model = get_asr_model()
-                        transcription = asr_model.transcribe_file(tmp_audio.name)
+                        if asr_model:
+                            transcription = asr_model.transcribe_file(tmp_audio.name)
                         os.unlink(tmp_audio.name)
         except Exception as e:
             logger.warning(f"Failed to transcribe audio for {object_name}: {str(e)}")
@@ -207,29 +261,22 @@ def cleanup_processed_item(bucket_name, object_name, event_data=None):
         # Remove faces from Qdrant that belong to this object
         # We'll filter by object_name in the payload
         try:
-            # Search for points with this object_name
-            search_result = qdrant.scroll(
+            qdrant.delete(
                 collection_name='faces',
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="object_name",
-                            match=models.MatchValue(value=object_name)
-                        )
-                    ]
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="object_name",
+                                match=models.MatchValue(value=object_name),
+                            )
+                        ]
+                    )
                 ),
-                limit=1000
+                wait=True,
             )
-            
-            # Delete found points
-            point_ids = [point.id for point in search_result[0]]
-            if point_ids:
-                qdrant.delete(
-                    collection_name='faces',
-                    points_selector=models.PointIdsList(points=point_ids)
-                )
-                logger.info(f"Deleted {len(point_ids)} face embeddings for {object_name}")
-            
+            logger.info(f"Deleted face embeddings for {object_name}")
+
         except Exception as e:
             logger.warning(f"Could not clean up embeddings for {object_name}: {str(e)}")
         

@@ -3,13 +3,23 @@ from scrapy.linkextractors import LinkExtractor
 from scrapy.spiders import CrawlSpider, Rule
 from scrapy_patchright.page import PageMethod
 from ..items import MediaItem
+import os
 
 class MediaSpider(CrawlSpider):
     name = 'media_spider'
     
     def __init__(self, *args, **kwargs):
         super(MediaSpider, self).__init__(*args, **kwargs)
-        self.start_urls = ['https://www.flickr.com/search/?text=portrait']
+        
+        # Get start_urls from spider arguments or Scrapy settings.
+        # This allows configuring the crawl target via docker-compose or command line.
+        urls = os.getenv('START_URL', 'https://www.flickr.com')
+
+        # Ensure that start_urls is a list of strings.
+        if isinstance(urls, str):
+            self.start_urls = [url.strip() for url in urls.split(',')]
+        else:
+            self.start_urls = urls
         
         media_extensions = {
             'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'mp4', 
