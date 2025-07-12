@@ -1,151 +1,913 @@
 <!DOCTYPE html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Face Lookup</title>
-        <link
-            href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css"
-            rel="stylesheet"
-        />
-    </head>
-    <body class="bg-gray-100 min-h-screen">
-        <div class="container mx-auto px-4 py-8">
-            <div class="max-w-md mx-auto bg-white rounded-lg shadow-lg p-6">
-                <h1 class="text-2xl font-bold text-center mb-6">Face Lookup</h1>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LookingGlass - Face Recognition Search</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-                <div class="mb-6">
-                    <div class="flex items-center justify-center w-full">
-                        <label
-                            class="w-full flex flex-col items-center px-4 py-6 bg-white rounded-lg shadow-lg tracking-wide border border-blue-500 cursor-pointer hover:bg-blue-500 hover:text-white"
-                        >
-                            <svg
-                                class="w-8 h-8"
-                                fill="currentColor"
-                                xmlns="http://www.w3.org/2000/svg"
-                                viewBox="0 0 20 20"
-                            >
-                                <path
-                                    d="M16.88 9.1A4 4 0 0 1 16 17H5a5 5 0 0 1-1-9.9V7a3 3 0 0 1 4.52-2.59A4.98 4.98 0 0 1 17 8c0 .38-.04.74-.12 1.1zM11 11h3l-4-4-4 4h3v3h2v-3z"
-                                />
-                            </svg>
-                            <span class="mt-2 text-sm">Select an image</span>
-                            <input
-                                type="file"
-                                class="hidden"
-                                id="imageInput"
-                                accept="image/*"
-                            />
-                        </label>
-                    </div>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+            color: #e2e8f0;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .app-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            max-width: 1920px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(71, 85, 105, 0.3);
+            padding: 1.5rem 2rem;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+            z-index: 100;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #f1f5f9;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .search-container {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .search-modes {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .mode-btn {
+            padding: 0.75rem 1.5rem;
+            border: 2px solid #475569;
+            background: rgba(30, 41, 59, 0.8);
+            color: #94a3b8;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            font-size: 0.9rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .mode-btn:hover {
+            border-color: #3b82f6;
+            color: #e2e8f0;
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .mode-btn.active {
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            color: white;
+            border-color: transparent;
+            box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3);
+        }
+
+        .upload-area {
+            flex: 1;
+            min-width: 250px;
+            height: 70px;
+            border: 2px dashed #475569;
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: rgba(30, 41, 59, 0.5);
+            backdrop-filter: blur(10px);
+        }
+
+        .upload-area:hover {
+            background: rgba(59, 130, 246, 0.1);
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2);
+        }
+
+        .upload-area.has-image {
+            border-color: #10b981;
+            background: rgba(16, 185, 129, 0.1);
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2);
+        }
+
+        .text-search {
+            flex: 2;
+            min-width: 300px;
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .search-input {
+            flex: 1;
+            padding: 1rem 1.5rem;
+            border: 2px solid #475569;
+            border-radius: 16px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: rgba(30, 41, 59, 0.8);
+            color: #e2e8f0;
+            backdrop-filter: blur(10px);
+        }
+
+        .search-input::placeholder {
+            color: #64748b;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+            background: rgba(30, 41, 59, 0.9);
+        }
+
+        .search-btn {
+            padding: 1rem 2rem;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            color: white;
+            border: none;
+            border-radius: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            font-size: 0.95rem;
+            box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3);
+        }
+
+        .search-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(59, 130, 246, 0.4);
+        }
+
+        .search-btn:active {
+            transform: translateY(0);
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            padding: 1.5rem;
+            gap: 1.5rem;
+            overflow: hidden;
+        }
+
+        .preview-panel {
+            width: 350px;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(71, 85, 105, 0.3);
+            border-radius: 24px;
+            padding: 2rem;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .preview-image {
+            width: 100%;
+            max-height: 300px;
+            object-fit: contain;
+            border-radius: 16px;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+
+        .preview-info {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .info-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid rgba(71, 85, 105, 0.3);
+        }
+
+        .info-item:last-child {
+            border-bottom: none;
+        }
+
+        .info-item span:first-child {
+            color: #94a3b8;
+            font-weight: 500;
+        }
+
+        .info-item span:last-child {
+            color: #e2e8f0;
+            font-weight: 400;
+        }
+
+        .results-panel {
+            flex: 1;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(71, 85, 105, 0.3);
+            border-radius: 24px;
+            padding: 2rem;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 2px solid rgba(71, 85, 105, 0.3);
+        }
+
+        .results-header h2 {
+            color: #f1f5f9;
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .results-grid {
+            flex: 1;
+            overflow-y: auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 1.5rem;
+            padding-right: 0.5rem;
+        }
+
+        .results-grid::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .results-grid::-webkit-scrollbar-track {
+            background: rgba(30, 41, 59, 0.3);
+            border-radius: 4px;
+        }
+
+        .results-grid::-webkit-scrollbar-thumb {
+            background: rgba(59, 130, 246, 0.6);
+            border-radius: 4px;
+        }
+
+        .results-grid::-webkit-scrollbar-thumb:hover {
+            background: rgba(59, 130, 246, 0.8);
+        }
+
+        .result-card {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(71, 85, 105, 0.3);
+            border-radius: 20px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+            height: fit-content;
+        }
+
+        .result-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+            border-color: rgba(59, 130, 246, 0.4);
+        }
+
+        .result-image {
+            width: 100%;
+            height: 220px;
+            object-fit: cover;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .result-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .result-header strong {
+            color: #f1f5f9;
+            font-size: 1.1rem;
+        }
+
+        .confidence-score {
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-weight: 700;
+            font-size: 1.1rem;
+        }
+
+        .confidence-bar {
+            background: rgba(71, 85, 105, 0.3);
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981, #3b82f6, #8b5cf6);
+            transition: width 0.3s ease;
+        }
+
+        .result-details {
+            font-size: 0.9rem;
+            color: #94a3b8;
+            margin-bottom: 1rem;
+        }
+
+        .result-details p {
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .result-details strong {
+            color: #cbd5e1;
+        }
+
+        .result-links {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .result-link {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 12px;
+            text-align: center;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+        }
+
+        .result-link:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+        }
+
+        .result-link.source {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+        }
+
+        .result-link.source:hover {
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 300px;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(71, 85, 105, 0.3);
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .face-box {
+            position: absolute;
+            border: 3px solid #3b82f6;
+            border-radius: 8px;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+        }
+
+        .face-label {
+            position: absolute;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            color: white;
+            padding: 0.5rem 0.75rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            top: -40px;
+            left: 0;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+        }
+
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #64748b;
+            text-align: center;
+        }
+
+        .empty-state-icon {
+            font-size: 4rem;
+            margin-bottom: 1.5rem;
+            opacity: 0.6;
+        }
+
+        .empty-state h3 {
+            color: #94a3b8;
+            margin-bottom: 0.5rem;
+        }
+
+        .empty-state p {
+            color: #64748b;
+        }
+
+        @media (max-width: 1024px) {
+            .main-content {
+                flex-direction: column;
+            }
+            
+            .preview-panel {
+                width: 100%;
+                max-height: 220px;
+                flex-direction: row;
+                align-items: center;
+                gap: 1.5rem;
+            }
+            
+            .preview-image {
+                max-width: 180px;
+                max-height: 180px;
+                margin-bottom: 0;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .search-container {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .text-search {
+                min-width: auto;
+            }
+            
+            .results-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header {
+                padding: 1rem;
+            }
+            
+            .main-content {
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header class="header">
+            <h1>🔍 LookingGlass</h1>
+            <div class="search-modes">
+                <button class="mode-btn active" id="mode-image">🖼️ Image Search</button>
+                <button class="mode-btn" id="mode-text">📝 Text Search</button>
+            </div>
+            <div class="search-container">
+                <div class="upload-area" id="upload-area">
+                    <span id="upload-text">📤 Click to upload image or drag & drop</span>
+                    <input type="file" id="file-input" accept="image/*" class="hidden">
                 </div>
-
-                <div id="preview" class="hidden mb-6">
-                    <img id="imagePreview" class="w-full rounded-lg shadow" />
-                </div>
-
-                <div id="results" class="hidden">
-                    <h2 class="text-xl font-semibold mb-4">Results</h2>
-                    <div id="matchResults" class="space-y-4"></div>
-                </div>
-
-                <div
-                    id="error"
-                    class="hidden text-red-500 text-center py-4"
-                ></div>
-
-                <div class="flex justify-center">
-                    <button
-                        id="submitBtn"
-                        class="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                        disabled
-                    >
-                        Look Up Face
-                    </button>
+                <div class="text-search">
+                    <input type="text" class="search-input" id="text-input" placeholder="Search dialogue and transcriptions...">
+                    <button class="search-btn" id="search-btn">Search</button>
                 </div>
             </div>
-        </div>
+        </header>
 
-        <script>
-            const imageInput = document.getElementById("imageInput");
-            const preview = document.getElementById("preview");
-            const imagePreview = document.getElementById("imagePreview");
-            const submitBtn = document.getElementById("submitBtn");
-            const results = document.getElementById("results");
-            const matchResults = document.getElementById("matchResults");
-            const error = document.getElementById("error");
+        <main class="main-content">
+            <aside class="preview-panel">
+                <div id="preview-content" class="empty-state">
+                    <div class="empty-state-icon">🎯</div>
+                    <h3>Select search mode</h3>
+                    <p>Upload an image for face search or use text search for dialogue and transcriptions</p>
+                </div>
+            </aside>
 
-            imageInput.addEventListener("change", function (e) {
-                const file = e.target.files[0];
-                if (file) {
-                    const reader = new FileReader();
-                    reader.onload = function (e) {
-                        imagePreview.src = e.target.result;
-                        preview.classList.remove("hidden");
-                        submitBtn.disabled = false;
-                    };
-                    reader.readAsDataURL(file);
-                }
+            <section class="results-panel">
+                <div class="results-header">
+                    <h2>Search Results</h2>
+                    <div id="results-count">0 results</div>
+                </div>
+                <div class="results-grid" id="results-grid">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔍</div>
+                        <h3>No results yet</h3>
+                        <p>Upload an image or enter a search query to see results</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        // DOM elements
+        const modeImageBtn = document.getElementById('mode-image');
+        const modeTextBtn = document.getElementById('mode-text');
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const textInput = document.getElementById('text-input');
+        const searchBtn = document.getElementById('search-btn');
+        const previewContent = document.getElementById('preview-content');
+        const resultsGrid = document.getElementById('results-grid');
+        const resultsCount = document.getElementById('results-count');
+        const uploadText = document.getElementById('upload-text');
+
+        // State
+        let currentMode = 'image';
+        let uploadedImage = null;
+        let currentResults = [];
+
+        // Initialize
+        setupEventListeners();
+
+        function setupEventListeners() {
+            // Mode switching
+            modeImageBtn.addEventListener('click', () => switchMode('image'));
+            modeTextBtn.addEventListener('click', () => switchMode('text'));
+
+            // File upload
+            uploadArea.addEventListener('click', () => fileInput.click());
+            uploadArea.addEventListener('dragover', handleDragOver);
+            uploadArea.addEventListener('drop', handleDrop);
+            fileInput.addEventListener('change', handleFileSelect);
+
+            // Text search
+            textInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') performTextSearch();
             });
+            searchBtn.addEventListener('click', performTextSearch);
+        }
 
-            submitBtn.addEventListener("click", async function () {
-                const file = imageInput.files[0];
-                if (!file) return;
+        function switchMode(mode) {
+            currentMode = mode;
+            
+            // Update button states
+            modeImageBtn.classList.toggle('active', mode === 'image');
+            modeTextBtn.classList.toggle('active', mode === 'text');
+            
+            // Update interface based on mode
+            if (mode === 'image') {
+                uploadArea.style.display = 'flex';
+                updatePreviewForImageMode();
+            } else {
+                uploadArea.style.display = 'none';
+                updatePreviewForTextMode();
+                textInput.focus();
+            }
+            
+            // Clear previous results
+            clearResults();
+        }
 
-                const formData = new FormData();
-                formData.append("file", file);
+        function updatePreviewForImageMode() {
+            if (!uploadedImage) {
+                previewContent.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🎯</div>
+                        <h3>Upload an image to start searching</h3>
+                        <p>Drag and drop or click to select an image with faces</p>
+                    </div>
+                `;
+            }
+        }
 
-                submitBtn.disabled = true;
-                error.classList.add("hidden");
-                results.classList.add("hidden");
+        function updatePreviewForTextMode() {
+            previewContent.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📝</div>
+                    <h3>Text Search Mode</h3>
+                    <p>Search for dialogue and transcriptions from videos. Enter keywords or phrases to find matching content.</p>
+                </div>
+            `;
+        }
 
-                try {
-                    const response = await fetch("/lookup", {
-                        method: "POST",
-                        body: formData
+        function handleDragOver(e) {
+            e.preventDefault();
+            uploadArea.style.background = 'rgba(59, 130, 246, 0.1)';
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            uploadArea.style.background = 'rgba(30, 41, 59, 0.5)';
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type.startsWith('image/')) {
+                handleImageUpload(files[0]);
+            }
+        }
+
+        function handleFileSelect(e) {
+            const file = e.target.files[0];
+            if (file) {
+                handleImageUpload(file);
+            }
+        }
+
+        function handleImageUpload(file) {
+            uploadedImage = file;
+            
+            // Update upload area
+            uploadArea.classList.add('has-image');
+            uploadText.textContent = `📷 ${file.name}`;
+            
+            // Show preview
+            displayImagePreview(file);
+            
+            // Automatically search
+            performImageSearch(file);
+        }
+
+        function displayImagePreview(file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                previewContent.innerHTML = `
+                    <img src="${e.target.result}" alt="Preview" class="preview-image" id="preview-image">
+                    <div class="preview-info">
+                        <div class="info-item">
+                            <span>📄 <strong>File:</strong></span>
+                            <span>${file.name}</span>
+                        </div>
+                        <div class="info-item">
+                            <span>📏 <strong>Size:</strong></span>
+                            <span>${(file.size / 1024).toFixed(1)} KB</span>
+                        </div>
+                        <div class="info-item">
+                            <span>🔍 <strong>Status:</strong></span>
+                            <span id="search-status">Searching...</span>
+                        </div>
+                    </div>
+                `;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function performImageSearch(file) {
+            showLoading();
+            
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/lookup', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Server error');
+                }
+
+                const data = await response.json();
+                displayResults(data);
+                updateSearchStatus('Search complete');
+
+            } catch (error) {
+                displayError(error.message);
+                updateSearchStatus('Search failed');
+            }
+        }
+
+        async function performTextSearch() {
+            const query = textInput.value.trim();
+            if (!query) return;
+
+            showLoading();
+            
+            try {
+                const response = await fetch('/search-text', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query: query })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Server error');
+                }
+
+                const data = await response.json();
+                displayTextResults(data);
+
+            } catch (error) {
+                // For now, show a placeholder since backend isn't implemented
+                displayError('Text search endpoint not yet implemented. Please implement /search-text endpoint.');
+            }
+        }
+
+        function showLoading() {
+            resultsGrid.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Searching for matches...</p>
+                </div>
+            `;
+        }
+
+        function displayResults(data) {
+            const { faces_found, face_locations, matches } = data;
+            currentResults = data;
+            
+            if (faces_found === 0) {
+                resultsGrid.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">😔</div>
+                        <h3>No faces found</h3>
+                        <p>Try uploading an image with visible faces</p>
+                    </div>
+                `;
+                resultsCount.textContent = '0 results';
+                return;
+            }
+
+            // Draw face boxes on preview image
+            drawFaceBoxes(face_locations);
+
+            // Display results
+            let allMatches = [];
+            matches.forEach((faceMatches, faceIndex) => {
+                faceMatches.forEach((match, matchIndex) => {
+                    allMatches.push({
+                        ...match,
+                        faceIndex: faceIndex + 1,
+                        matchIndex: matchIndex + 1
                     });
-
-                    const data = await response.json();
-
-                    if (data.error) {
-                        error.textContent = data.error;
-                        error.classList.remove("hidden");
-                    } else {
-                        matchResults.innerHTML = "";
-                        data.matches.forEach((faceMatches, index) => {
-                            const matchHtml = `
-                            <div class="bg-gray-50 rounded-lg p-4">
-                                <h3 class="font-semibold mb-2">Face #${
-                                    index + 1
-                                }</h3>
-                                ${faceMatches
-                                    .map(
-                                        (match) => `
-                                    <div class="flex justify-between items-center py-2">
-                                        <span class="font-medium">${
-                                            match.name
-                                        }</span>
-                                        <span class="text-sm text-gray-600">${Math.round(
-                                            match.confidence * 100
-                                        )}% match</span>
-                                    </div>
-                                `
-                                    )
-                                    .join("")}
-                            </div>
-                        `;
-                            matchResults.innerHTML += matchHtml;
-                        });
-                        results.classList.remove("hidden");
-                    }
-                } catch (err) {
-                    error.textContent =
-                        "An error occurred while processing the image.";
-                    error.classList.remove("hidden");
-                } finally {
-                    submitBtn.disabled = false;
-                }
+                });
             });
-        </script>
-    </body>
+
+            if (allMatches.length === 0) {
+                resultsGrid.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔍</div>
+                        <h3>No matches found</h3>
+                        <p>Found ${faces_found} face${faces_found > 1 ? 's' : ''}, but no matches in database</p>
+                    </div>
+                `;
+                resultsCount.textContent = '0 matches';
+                return;
+            }
+
+            resultsCount.textContent = `${allMatches.length} match${allMatches.length > 1 ? 'es' : ''} found`;
+            
+            resultsGrid.innerHTML = allMatches.map(match => `
+                <div class="result-card">
+                    <img src="${match.image_data_uri}" alt="Match" class="result-image">
+                    <div class="result-info">
+                        <div class="result-header">
+                            <strong>Face #${match.faceIndex}</strong>
+                            <span class="confidence-score">${(match.score * 100).toFixed(1)}%</span>
+                        </div>
+                        <div class="confidence-bar">
+                            <div class="confidence-fill" style="width: ${match.score * 100}%"></div>
+                        </div>
+                        <div class="result-details">
+                            <p><strong>📍 Source:</strong> ${truncateUrl(match.source_url, 35)}</p>
+                            <p><strong>🖼️ Media:</strong> ${truncateUrl(match.media_url, 35)}</p>
+                        </div>
+                        <div class="result-links">
+                            <a href="${match.source_url}" target="_blank" class="result-link source">View Source</a>
+                            <a href="${match.media_url}" target="_blank" class="result-link">View Image</a>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function displayTextResults(data) {
+            // This will be implemented when the backend is ready
+            // For now, just show a placeholder
+            resultsGrid.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">🚧</div>
+                    <h3>Text Search Ready</h3>
+                    <p>Backend implementation needed for searching transcriptions</p>
+                </div>
+            `;
+        }
+
+        function drawFaceBoxes(face_locations) {
+            const img = document.getElementById('preview-image');
+            if (!img) return;
+
+            // Remove existing boxes
+            const existingBoxes = document.querySelectorAll('.face-box');
+            existingBoxes.forEach(box => box.remove());
+
+            img.onload = function() {
+                face_locations.forEach((location, index) => {
+                    const [top, right, bottom, left] = location;
+                    const scaleX = img.offsetWidth / img.naturalWidth;
+                    const scaleY = img.offsetHeight / img.naturalHeight;
+
+                    const box = document.createElement('div');
+                    box.className = 'face-box';
+                    box.style.left = `${left * scaleX}px`;
+                    box.style.top = `${top * scaleY}px`;
+                    box.style.width = `${(right - left) * scaleX}px`;
+                    box.style.height = `${(bottom - top) * scaleY}px`;
+
+                    const label = document.createElement('div');
+                    label.className = 'face-label';
+                    label.textContent = `Face #${index + 1}`;
+                    box.appendChild(label);
+
+                    img.parentElement.appendChild(box);
+                });
+            };
+        }
+
+        function displayError(message) {
+            resultsGrid.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">❌</div>
+                    <h3>Error</h3>
+                    <p>${message}</p>
+                </div>
+            `;
+            resultsCount.textContent = 'Error occurred';
+        }
+
+        function clearResults() {
+            resultsGrid.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">🔍</div>
+                    <h3>No results yet</h3>
+                    <p>Upload an image or enter a search query to see results</p>
+                </div>
+            `;
+            resultsCount.textContent = '0 results';
+        }
+
+        function updateSearchStatus(status) {
+            const statusElement = document.getElementById('search-status');
+            if (statusElement) {
+                statusElement.textContent = status;
+            }
+        }
+
+        function truncateUrl(url, maxLength) {
+            if (!url) return 'N/A';
+            if (url.length <= maxLength) return url;
+            return url.substring(0, maxLength) + '...';
+        }
+    </script>
+</body>
 </html>

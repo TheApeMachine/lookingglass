@@ -1,8 +1,0 @@
-retina-face
-opencv-python-headless
-moviepy==1.0.3
-imageio
-imageio-ffmpeg
-speechbrain
-minio
-tensorflow
