@@ -1,6 +1,10 @@
 import scrapy
+import io
+import time
+from minio import Minio
 from scrapy.linkextractors import LinkExtractor
 from scrapy.spiders import CrawlSpider, Rule
+from scrapy.http import HtmlResponse
 from scrapy_patchright.page import PageMethod
 from ..items import MediaItem
 import os
@@ -31,9 +35,7 @@ class MediaSpider(CrawlSpider):
         media_regex = r'\.(' + '|'.join(media_extensions) + r')$'
 
         self.rules = (
-            # Rule 1: Extract media links and send them to the pipeline.
-            # It finds links in `<a>`, `<img>`, `<video>` tags and processes them 
-            # with `parse_item`. It does NOT follow these links.
+            # Rule 1: media files
             Rule(
                 LinkExtractor(
                     allow=media_regex,
@@ -45,15 +47,14 @@ class MediaSpider(CrawlSpider):
                 callback='parse_item',
                 follow=False  # Do not follow media links
             ),
-            # Rule 2: Extract all other page links and follow them for crawling.
-            # It ignores media links (to avoid duplication) and follows all
-            # other links to discover new pages.
+            # Rule 2: Process regular HTML pages (upload to MinIO) and keep crawling.
             Rule(
                 LinkExtractor(
                     deny=media_regex,
                     canonicalize=True,
                     unique=True
                 ),
+                callback='parse_page',
                 follow=True
             ),
         )
@@ -61,11 +62,27 @@ class MediaSpider(CrawlSpider):
         # Re-compile the rules after defining them in __init__
         super(MediaSpider, self)._compile_rules()
 
+        # MinIO setup for page HTML upload
+        self.minio_client = Minio(
+            os.getenv('MINIO_ENDPOINT', 'minio:9000'),
+            access_key=os.getenv('MINIO_USER', 'miniouser'),
+            secret_key=os.getenv('MINIO_PASSWORD', 'miniopassword'),
+            secure=False
+        )
+        self.bucket = os.getenv('MINIO_BUCKET', 'scraped')
+
+        # ensure bucket exists
+        try:
+            if not self.minio_client.bucket_exists(self.bucket):
+                self.minio_client.make_bucket(self.bucket)
+                self.logger.warning(f"✅ Created MinIO bucket: {self.bucket}")
+        except Exception as e:
+            self.logger.error(f"MinIO bucket error: {e}")
+
     def start_requests(self):
         """Generate initial requests - backward compatible version."""
         for url in self.start_urls:
             try:
-                self.logger.debug(f"Starting request for {url}")
                 yield scrapy.Request(
                     url=url,
                     meta={
@@ -103,7 +120,6 @@ class MediaSpider(CrawlSpider):
 
     def parse_item(self, response):
         """This callback is for pages that are media files."""
-        self.logger.debug(f"Found media: {response.url}")
 
         video_extensions = ['.mp4', '.webm', '.avi', '.mov', '.wmv', '.flv', '.mkv']
         is_video = any(response.url.lower().endswith(ext) for ext in video_extensions)
@@ -115,3 +131,35 @@ class MediaSpider(CrawlSpider):
         item['is_video'] = is_video
         item['source_url'] = source_url
         yield item
+
+    # ----------------------------------------
+    # HTML page handling
+    # ----------------------------------------
+
+    def parse_page(self, response):
+        """Store full HTML of crawled page to MinIO for later NER processing."""
+        url = response.url
+        try:
+            html_bytes = response.body  # already bytes
+            # Use hash of URL as filename to avoid collisions
+            obj_name = f"pages/{abs(hash(url))}.html"
+
+            metadata = {
+                "x-amz-meta-source-url": url,
+                "x-amz-meta-downloaded-at": str(time.time()),
+                "x-amz-meta-content-type": "text/html"
+            }
+
+            self.minio_client.put_object(
+                self.bucket,
+                obj_name,
+                io.BytesIO(html_bytes),
+                length=len(html_bytes),
+                part_size=10 * 1024 * 1024,
+                content_type="text/html",
+                metadata=metadata,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed uploading page {url}: {e}")
+        finally:
+            return []  # No items

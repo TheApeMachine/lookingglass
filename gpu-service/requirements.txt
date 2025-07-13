@@ -14,13 +14,13 @@ opencv-python-headless
 face_recognition==1.3.0
 
 # GPU-accelerated libraries (compatible versions)
-torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118
-torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
-torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+torch==2.2.0 --index-url https://download.pytorch.org/whl/cu118
+torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu118
+torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118
 
-# TensorFlow (compatible with CUDA 11.8 and numpy 1.24.3)
-tensorflow==2.13.0
-keras==2.13.1
+# TensorFlow (2.12.x links against cuDNN 8.5 which matches PyTorch 2.0.1 binaries)
+tensorflow==2.11.1
+keras==2.11.0
 
 # Face detection and recognition (compatible versions)
 retina-face==0.0.17
@@ -36,6 +36,14 @@ imageio-ffmpeg
 
 # Audio processing (compatible version)
 speechbrain
+
+# NLP and graph
+gliner==0.1.12
+neo4j==5.19.0
+
+# Relation extraction
+transformers==4.41.0
+sentencepiece
 
 # File monitoring and storage
 watchdog

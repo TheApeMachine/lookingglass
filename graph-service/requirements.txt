@@ -1,0 +1,11 @@
+neo4j
+graphdatascience
+schedule
+minio
+gliner
+transformers
+sentencepiece
+torch
+numpy
+html-to-markdown
+lxml

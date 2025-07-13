@@ -23,18 +23,15 @@ def refresh_proxies():
     while len(good_proxies) < 3 and attempts < max_attempts:
         # Check if we've exceeded max time
         if time.time() - start_time > max_time:
-            logger.debug("Proxy refresh timeout reached, stopping current cycle")
             break
             
         attempts += 1
         try:
             proxy_str = FreeProxy(timeout=1, rand=True).get()
-            logger.debug(f"Fetched proxy: {proxy_str}")
             # Basic validation
             if proxy_str and proxy_str.startswith('http'):
                 good_proxies.add(proxy_str)
         except Exception as e:
-            logger.debug(f"Proxy fetch failed: {e}")
             continue
 
     if len(good_proxies) > 0:

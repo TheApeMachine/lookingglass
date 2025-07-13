@@ -9,7 +9,7 @@ from minio import Minio
 import base64
 from redis import Redis
 from rq import Queue
-from jobs import route_processing_job, cleanup_processed_item
+from jobs import route_processing_job, cleanup_processed_item, get_media_type
 import threading
 
 q = Queue(connection=Redis(host='redis', port=6379))
@@ -36,8 +36,6 @@ def listen_bucket_events(minio_client, bucket_name, q):
         events=['s3:ObjectCreated:*', 's3:ObjectRemoved:*']
     ) as events:
         for event in events:
-            logger.info(f"Received raw event: {event}")
-            
             for record in event.get('Records', []):
                 try:
                     event_name = record['eventName']
@@ -45,7 +43,10 @@ def listen_bucket_events(minio_client, bucket_name, q):
                     object_name = record['s3']['object']['key']
                     
                     if event_name.startswith('s3:ObjectCreated:'):
-                        logger.info(f"Enqueuing creation job for {bucket}/{object_name}")
+                        media_type = get_media_type(object_name)
+                        if media_type == 'page':
+                            # page processing handled by graph service – skip
+                            continue
                         q.enqueue(
                             route_processing_job, 
                             bucket_name=bucket, 
@@ -54,7 +55,6 @@ def listen_bucket_events(minio_client, bucket_name, q):
                             event_data=record
                         )
                     elif event_name.startswith('s3:ObjectRemoved:'):
-                        logger.info(f"Enqueuing cleanup job for {bucket}/{object_name}")
                         q.enqueue(
                             cleanup_processed_item, 
                             bucket_name=bucket, 

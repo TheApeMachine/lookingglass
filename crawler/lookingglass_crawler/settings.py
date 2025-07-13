@@ -42,7 +42,7 @@ DELTAFETCH_ENABLED = True
 
 # Enhanced Resilience Settings for High-Memory System with Anti-Blocking
 # More aggressive retry configuration
-RETRY_TIMES = 5
+RETRY_TIMES = 1
 RETRY_HTTP_CODES = [500, 502, 503, 504, 408, 429, 403]  # Include 403 in retries
 
 # Don't stop on HTTP errors - continue crawling
@@ -82,12 +82,22 @@ SCHEDULER_PRIORITY_QUEUE = "scrapy.pqueues.DownloaderAwarePriorityQueue"
 
 # Anti-blocking middleware stack
 DOWNLOADER_MIDDLEWARES = {
-    'scrapy.downloadermiddlewares.retry.RetryMiddleware': 90,
-    'scrapy.downloadermiddlewares.useragent.UserAgentMiddleware': None,  # Disable default
-    'lookingglass_crawler.middlewares.RotateUserAgentMiddleware': 95,  # Custom rotation
+    'scrapy.downloadermiddlewares.retry.RetryMiddleware': None,
+    'scrapy.downloadermiddlewares.useragent.UserAgentMiddleware': None,
+    'scrapy_fake_useragent.middleware.RandomUserAgentMiddleware': 400,
+    'scrapy_fake_useragent.middleware.RetryUserAgentMiddleware': 401,
     'lookingglass_crawler.resilient_proxy_middleware.ResilientProxyMiddleware': 110,
     'scrapy.downloadermiddlewares.httpcompression.HttpCompressionMiddleware': 120,
 }
+
+# --- scrapy-fake-useragent settings ---
+FAKEUSERAGENT_PROVIDERS = [
+    'scrapy_fake_useragent.providers.FakeUserAgentProvider',  # this is the first provider we'll try
+    'scrapy_fake_useragent.providers.FakerProvider',  # if FakeUserAgentProvider fails, we'll use faker to generate a user-agent string for us
+    'scrapy_fake_useragent.providers.FixedUserAgentProvider',  # fall back to USER_AGENT value
+]
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
 
 # --- Proxy List ---
 # A file with one proxy per line, e.g., http://host:port

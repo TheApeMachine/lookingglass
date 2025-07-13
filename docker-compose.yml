@@ -16,9 +16,12 @@ services:
     volumes:
       - ./transcriptions:/app/transcriptions
     depends_on:
-      - redis
-      - minio
-      - qdrant
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
     deploy:
       resources:
         reservations:
@@ -44,9 +47,12 @@ services:
     volumes:
       - ./transcriptions:/app/transcriptions
     depends_on:
-      - redis
-      - minio
-      - qdrant
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
     deploy:
       resources:
         reservations:
@@ -54,47 +60,6 @@ services:
             - driver: nvidia
               device_ids: ['2']
               capabilities: [gpu]
-
-  # Additional workers for high-memory system
-  # rq-worker-3:
-  #   build: ./gpu-service
-  #   command: rq worker --url redis://redis:6379 --name facial_recognition_cpu1 --with-scheduler
-  #   environment:
-  #     - REDIS_URL=redis://redis:6379
-  #     - MINIO_ENDPOINT=minio:9000
-  #     - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-  #     - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-  #     - MINIO_BUCKET=scraped
-  #     - QDRANT_HOST=qdrant
-  #     - QDRANT_PORT=6333
-  #     - QDRANT_API_KEY=qdrantapikey
-  #     - QUEUE_NAMES=facial_recognition
-  #   volumes:
-  #     - ./transcriptions:/app/transcriptions
-  #   depends_on:
-  #     - redis
-  #     - minio
-  #     - qdrant
-
-  # rq-worker-4:
-  #   build: ./gpu-service
-  #   command: rq worker --url redis://redis:6379 --name facial_recognition_cpu2 --with-scheduler
-  #   environment:
-  #     - REDIS_URL=redis://redis:6379
-  #     - MINIO_ENDPOINT=minio:9000
-  #     - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-  #     - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-  #     - MINIO_BUCKET=scraped
-  #     - QDRANT_HOST=qdrant
-  #     - QDRANT_PORT=6333
-  #     - QDRANT_API_KEY=qdrantapikey
-  #     - QUEUE_NAMES=facial_recognition
-  #   volumes:
-  #     - ./transcriptions:/app/transcriptions
-  #   depends_on:
-  #     - redis
-  #     - minio
-  #     - qdrant
 
   gpu-service:
     build: ./gpu-service
@@ -136,7 +101,7 @@ services:
     build: ./crawler
     # This service no longer needs to mount a volume, as all data goes to MinIO
     environment:
-      - START_URL=https://southpole.com
+      - START_URL=https://www.southpole.com/about-us/our-leadership-team
       - MINIO_ENDPOINT=minio:9000
       - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
       - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
@@ -149,7 +114,7 @@ services:
   crawler2:
     build: ./crawler
     environment:
-      - START_URL=https://verra.org
+      - START_URL=https://icvcm.org/about-us/meet-the-team
       - MINIO_ENDPOINT=minio:9000
       - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
       - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
@@ -167,6 +132,11 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
 
   minio:
     image: minio/minio
@@ -197,8 +167,65 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
 
+  analytics-worker:
+    build: ./graph-service
+    environment:
+      - NEO4J_HOST=neo4j
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=password
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_USER=miniouser
+      - MINIO_PASSWORD=miniopassword
+      - MINIO_BUCKET=scraped
+    depends_on:
+      - neo4j
+    restart: unless-stopped
+
+  graph-page-worker:
+    build: ./graph-service
+    command: ["python", "page_worker.py"]
+    environment:
+      - NEO4J_HOST=neo4j
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=password
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_USER=miniouser
+      - MINIO_PASSWORD=miniopassword
+      - MINIO_BUCKET=scraped
+    depends_on:
+      - neo4j
+      - minio
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:latest
+    container_name: neo4j
+    ports:
+      - "7474:7474" # Browser
+      - "7687:7687" # Bolt
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4JLABS_PLUGINS=["apoc","graph-data-science"]
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_conf:/conf
+    healthcheck:
+      test:
+        ["CMD", "wget", "--no-verbose", "--spider", "localhost:7474/browser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 volumes:
   qdrant_storage:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_conf:
   minio_data:
   transcriptions:
   redis_data:

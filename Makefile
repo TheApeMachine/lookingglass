@@ -1,8 +1,11 @@
-.PHONY: up down sparse crawler
+.PHONY: all up down sparse crawler page
 
-up:
+all:
 	docker compose down
 	docker compose up --build
+
+up:
+	docker compose up
 
 down:
 	docker compose down
@@ -18,4 +21,8 @@ crawler:
 ui:
 	docker compose down lookup
 	docker compose up lookup --build
+
+page:
+	docker compose down graph-page-worker analytics-worker
+	docker compose up graph-page-worker analytics-worker --build
 

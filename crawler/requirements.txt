@@ -9,3 +9,4 @@ twisted
 brotli
 brotlicffi
 scrapy-deltafetch
+scrapy-fake-useragent
