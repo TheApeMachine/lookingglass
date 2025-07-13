@@ -118,26 +118,15 @@ class MediaSpider(CrawlSpider):
         # Don't log every failed request - too noisy
         self.logger.error(f"Request failed: {failure.request.url} - {failure.value}")
 
-    def parse_item(self, response):
-        """This callback is for pages that are media files."""
-
-        video_extensions = ['.mp4', '.webm', '.avi', '.mov', '.wmv', '.flv', '.mkv']
-        is_video = any(response.url.lower().endswith(ext) for ext in video_extensions)
-        
-        source_url = response.request.headers.get('Referer', b'').decode('utf-8', 'ignore')
-
-        item = MediaItem()
-        item['media_urls'] = [response.url]
-        item['is_video'] = is_video
-        item['source_url'] = source_url
-        yield item
-
     # ----------------------------------------
     # HTML page handling
     # ----------------------------------------
-
     def parse_page(self, response):
         """Store full HTML of crawled page to MinIO for later NER processing."""
+        if not isinstance(response, HtmlResponse):
+            self.logger.debug(f"Skipping non-HTML response: {response.url}")
+            return
+
         url = response.url
         try:
             html_bytes = response.body  # already bytes
@@ -161,5 +150,24 @@ class MediaSpider(CrawlSpider):
             )
         except Exception as e:
             self.logger.error(f"❌ Failed uploading page {url}: {e}")
-        finally:
-            return []  # No items
+        
+        # We explicitly return nothing here, because the `follow=True` in the Rule
+        # will handle the link extraction and following.
+        return
+
+    # ----------------------------------------
+    # Media item handling (images/videos)
+    # ----------------------------------------
+    def parse_item(self, response):
+        """This callback is for pages that are media files."""
+
+        video_extensions = ['.mp4', '.webm', '.avi', '.mov', '.wmv', '.flv', '.mkv']
+        is_video = any(response.url.lower().endswith(ext) for ext in video_extensions)
+        
+        source_url = response.request.headers.get('Referer', b'').decode('utf-8', 'ignore')
+
+        item = MediaItem()
+        item['media_urls'] = [response.url]
+        item['is_video'] = is_video
+        item['source_url'] = source_url
+        yield item

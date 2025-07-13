@@ -10,6 +10,8 @@ from retinaface import RetinaFace
 from moviepy.editor import VideoFileClip
 from speechbrain.inference import EncoderDecoderASR
 from qdrant_client import QdrantClient, models
+import time
+from redis.exceptions import BusyLoadingError
 
 # Task queue
 from redis import Redis
@@ -62,8 +64,30 @@ except Exception:
         vectors_config=models.VectorParams(size=128, distance=models.Distance.COSINE)
     )
 
+def get_redis_connection():
+    """Get a Redis connection, retrying if Redis is loading data."""
+    for attempt in range(12):  # retry for ~1 minute
+        try:
+            r = Redis(
+                host=os.getenv("REDIS_HOST", "redis"),
+                port=int(os.getenv("REDIS_PORT", 6379)),
+                decode_responses=True # Important for string commands
+            )
+            r.ping() # Check if connection is alive and Redis is ready
+            logger.info("Connected to Redis")
+            return r
+        except BusyLoadingError:
+            logger.warning(f"Redis is loading data, retrying... (attempt {attempt + 1}/12)")
+            time.sleep(5)
+        except Exception as e:
+            logger.warning(f"Redis not available yet (attempt {attempt + 1}/12): {e}")
+            time.sleep(5)
+    logger.error("Unable to connect to Redis after multiple attempts.")
+    raise ConnectionError("Could not connect to Redis after multiple attempts.")
+
+
 # Initialise RQ queue so that jobs can be enqueued from this module
-redis_conn = Redis(host=os.getenv("REDIS_HOST", "redis"), port=int(os.getenv("REDIS_PORT", 6379)))
+redis_conn = get_redis_connection()
 q = Queue(connection=redis_conn)
 
 # Load ASR model (lazy loading)

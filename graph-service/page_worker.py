@@ -201,14 +201,15 @@ def process_page_object(object_name: str):
 
         for group in grouped_sentences:
             try:
-                entities = ner.predict_entities(" ".join(group), labels, flat_ner=True, threshold=0.3)
+                chunk_text = " ".join(group)
+                entities = ner.predict_entities(chunk_text, labels, flat_ner=True, threshold=0.3)
                 # Merge adjacent token-level entities to form complete multi-word entities
-                entities = merge_entities(entities, text)
+                entities = merge_entities(entities, chunk_text)
 
                 for entity in entities:
                     found_entities.append(entity)
             except Exception as e:
-                logger.warning(f"NER failed on chunk {group}: {e}")
+                logger.warning(f"NER failed on chunk: {e}")
 
 
         triples = extract_relations(text)
@@ -216,15 +217,15 @@ def process_page_object(object_name: str):
         with neo_driver.session() as sess:
             for entity in found_entities:
                 if entity["label"] == "person":
-                    sess.run("MERGE (p:Person {name:$n})", n=entity["text"])
+                    sess.run("MERGE (p:Person:Entity {name:$n})", n=entity["text"])
                 elif entity["label"] == "organization":
-                    sess.run("MERGE (o:Organization {name:$n})", n=entity["text"])
+                    sess.run("MERGE (o:Organization:Entity {name:$n})", n=entity["text"])
                 elif entity["label"] == "job":
-                    sess.run("MERGE (j:Job {title:$t})", t=entity["text"])
+                    sess.run("MERGE (j:Job:Entity {name:$t})", t=entity["text"])
                 elif entity["label"] == "project":
-                    sess.run("MERGE (p:Project {name:$n})", n=entity["text"])
+                    sess.run("MERGE (p:Project:Entity {name:$n})", n=entity["text"])
                 elif entity["label"] == "location":
-                    sess.run("MERGE (l:Location {name:$n})", n=entity["text"])
+                    sess.run("MERGE (l:Location:Entity {name:$n})", n=entity["text"])
 
         with neo_driver.session() as sess:
             # Allow only triples whose subject AND object were detected by NuNER.

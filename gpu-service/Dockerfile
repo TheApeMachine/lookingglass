@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libatlas3-base \
     libgfortran5 \
     ffmpeg \
+    redis-tools \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/opt/venv/bin:$PATH"

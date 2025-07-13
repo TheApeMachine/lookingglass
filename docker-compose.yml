@@ -1,7 +1,15 @@
 services:
   rq-worker-1:
     build: ./gpu-service
-    command: ["rq", "worker", "--url", "redis://redis:6379", "--name", "facial_recognition_gpu1", "--with-scheduler"]
+    command: >
+      bash -c "
+        while ! redis-cli -h redis -p 6379 ping | grep -q PONG; do
+          echo 'Waiting for redis...'
+          sleep 1
+        done
+        echo 'Redis is up, starting worker.'
+        rq worker --url redis://redis:6379 --name facial_recognition_gpu1 --with-scheduler
+      "
     environment:
       - REDIS_URL=redis://redis:6379
       - MINIO_ENDPOINT=minio:9000
@@ -32,7 +40,15 @@ services:
 
   rq-worker-2:
     build: ./gpu-service
-    command: ["rq", "worker", "--url", "redis://redis:6379", "--name", "facial_recognition_gpu2", "--with-scheduler"]
+    command: >
+      bash -c "
+        while ! redis-cli -h redis -p 6379 ping | grep -q PONG; do
+          echo 'Waiting for redis...'
+          sleep 1
+        done
+        echo 'Redis is up, starting worker.'
+        rq worker --url redis://redis:6379 --name facial_recognition_gpu2 --with-scheduler
+      "
     environment:
       - REDIS_URL=redis://redis:6379
       - MINIO_ENDPOINT=minio:9000
