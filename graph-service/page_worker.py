@@ -1,7 +1,7 @@
 import os
 import logging
 import time
-import io
+import itertools
 import warnings
 from minio import Minio
 from gliner import GLiNER
@@ -170,38 +170,40 @@ def merge_entities(entities, text: str):
     merged.append(current)
     return merged
 
+def chunk_by_tokens(sentences, tokenizer, max_tok=384):
+    """
+    Generator to chunk sentences by token count.
+    """
+    buf, cur_len = [], 0
+    for s in sentences:
+        tokens = tokenizer.encode(s, add_special_tokens=False)
+        if cur_len + len(tokens) > max_tok and buf:
+            yield " ".join(buf)
+            buf, cur_len = [], 0
+        buf.append(s)
+        cur_len += len(tokens)
+    if buf:
+        yield " ".join(buf)
+
+
 def process_page_object(object_name: str):
     try:
-        response = minio_client.get_object(MINIO_BUCKET, object_name)
-        html_bytes = response.read()
+        with minio_client.get_object(MINIO_BUCKET, object_name) as response:
+            html_bytes = response.read()
         text = html_bytes.decode("utf-8", errors="ignore")
         text = convert_to_markdown(text)
 
         ner = get_ner_model()
+        ner_tokenizer = ner.tokenizer
         labels = ["person", "organization", "location", "project", "initiative", "job"]
         labels = [l.lower() for l in labels]
 
         sentences = split_into_sentences(text)
 
-        # Group sentences up to 384 tokens, without splitting sentences.
-        grouped_sentences = []
-        current_group = []
-        current_length = 0
-        for sentence in sentences:
-            if current_length + len(sentence) > 384:
-                grouped_sentences.append(current_group)
-                current_group = []
-                current_length = 0
-            current_group.append(sentence)
-            current_length += len(sentence)
-        if current_group:
-            grouped_sentences.append(current_group)
-
         found_entities = []
 
-        for group in grouped_sentences:
+        for chunk_text in chunk_by_tokens(sentences, ner_tokenizer, max_tok=384):
             try:
-                chunk_text = " ".join(group)
                 entities = ner.predict_entities(chunk_text, labels, flat_ner=True, threshold=0.3)
                 # Merge adjacent token-level entities to form complete multi-word entities
                 entities = merge_entities(entities, chunk_text)
@@ -211,28 +213,28 @@ def process_page_object(object_name: str):
             except Exception as e:
                 logger.warning(f"NER failed on chunk: {e}")
 
-
         triples = extract_relations(text)
 
         with neo_driver.session() as sess:
-            for entity in found_entities:
-                if entity["label"] == "person":
-                    sess.run("MERGE (p:Person:Entity {name:$n})", n=entity["text"])
-                elif entity["label"] == "organization":
-                    sess.run("MERGE (o:Organization:Entity {name:$n})", n=entity["text"])
-                elif entity["label"] == "job":
-                    sess.run("MERGE (j:Job:Entity {name:$t})", t=entity["text"])
-                elif entity["label"] == "project":
-                    sess.run("MERGE (p:Project:Entity {name:$n})", n=entity["text"])
-                elif entity["label"] == "location":
-                    sess.run("MERGE (l:Location:Entity {name:$n})", n=entity["text"])
+            # Batch-create entities
+            entity_map = {
+                "person": "Person",
+                "organization": "Organization",
+                "job": "Job",
+                "project": "Project",
+                "location": "Location"
+            }
+            for label, node_label in entity_map.items():
+                entities_to_create = list({e["text"] for e in found_entities if e["label"] == label})
+                if entities_to_create:
+                    sess.run(f"UNWIND $entities AS e MERGE (n:{node_label}:Entity {{name: e}})", entities=entities_to_create)
 
-        with neo_driver.session() as sess:
             # Allow only triples whose subject AND object were detected by NuNER.
             valid_entities = {e["text"] for e in found_entities}
 
-            import itertools
-            pairs = list(itertools.combinations(valid_entities, 2))
+            organization_entities = {e["text"] for e in found_entities if e["label"] == "organization"}
+            
+            pairs = list(itertools.combinations(organization_entities, 2))
             if pairs:
                 sess.run(
                     """
@@ -240,34 +242,35 @@ def process_page_object(object_name: str):
                     MERGE (o1:Organization {name: pair[0]})
                     MERGE (o2:Organization {name: pair[1]})
                     MERGE (o1)-[r:SOFT_RELATED]-(o2)
-                    ON CREATE SET r.shared_persons = 1
-                    ON MATCH  SET r.shared_persons = coalesce(r.shared_persons, 0) + 1
+                    ON CREATE SET r.shared_count = 1
+                    ON MATCH  SET r.shared_count = coalesce(r.shared_count, 0) + 1
                     """,
                     pairs=pairs,
                 )
 
-            # Create RE edges only between NuNER-detected nodes – skip triples that introduce new nodes.
+            # Batch-create relationships
+            valid_triples_by_type = {}
             for subj, rel, obj in triples:
-                if subj not in valid_entities or obj not in valid_entities:
-                    continue  # ignore triples introducing unseen entities
-
-                edge = REL_MAP.get(rel.lower())
-                if not edge:
-                    continue
-
-                # Merge nodes and the relationship. This ensures that if nodes from REBEL don't exist, they are created.
-                # We assume they can be either Person or Organization, and we'll try to match them first.
+                if subj in valid_entities and obj in valid_entities:
+                    edge = REL_MAP.get(rel.lower())
+                    if edge:
+                        if edge not in valid_triples_by_type:
+                            valid_triples_by_type[edge] = []
+                        valid_triples_by_type[edge].append({'subj': subj, 'obj': obj})
+            
+            for edge_type, batch in valid_triples_by_type.items():
                 sess.run(
                     f"""
-                    MERGE (a:Entity {{name: $subj}})
-                    MERGE (b:Entity {{name: $obj}})
-                    MERGE (a)-[:{edge}]->(b)
+                    UNWIND $batch as pair
+                    MERGE (a:Entity {{name: pair.subj}})
+                    MERGE (b:Entity {{name: pair.obj}})
+                    MERGE (a)-[:`{edge_type}`]->(b)
                     """,
-                    subj=subj,
-                    obj=obj,
+                    batch=batch
                 )
+
     except Exception as e:
-        logger.error(f"Error processing {object_name}: {e}")
+        logger.error(f"Error processing {object_name}: {e}", exc_info=True)
 
 
 def main():
@@ -292,7 +295,7 @@ def main():
                     logger.info(f"New HTML object: {obj_name}")
                     process_page_object(obj_name)
         except Exception as e:
-            logger.error(f"Listener error: {e}")
+            logger.error(f"Listener error: {e}", exc_info=True)
             time.sleep(5)
 
 if __name__ == "__main__":
