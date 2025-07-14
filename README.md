@@ -1,5 +1,7 @@
 # LookingGlass: Advanced Face Recognition System
 
+![banner.png](banner.png)
+
 LookingGlass is a production-grade distributed face recognition system that combines state-of-the-art computer vision techniques with efficient vector search capabilities. It's designed to process, analyze, and match faces across large datasets with high accuracy and performance.
 
 It comes with a web crawler to collect images and videos of faces across the web, and a simple web app to upload images for recognition against the collected faces, providing a full, end-to-end setup, similar to PimEyes, or FaceCheck.

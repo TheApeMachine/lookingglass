@@ -1,14 +1,4 @@
-face_recognition
-faiss-gpu
-numpy<2.0
-pillow
 flask
-retina-face
-opencv-python-headless
-tensorflow
-torch
-selenium
 requests
-urllib3
+pillow
 werkzeug
-face-recognition-models

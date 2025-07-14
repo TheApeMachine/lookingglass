@@ -1,0 +1,54 @@
+# Core web framework
+flask
+gunicorn
+werkzeug
+
+# Essential packages first - pin numpy to avoid compatibility issues
+wheel
+setuptools
+numpy==1.24.3
+pillow
+
+# Computer vision and ML (install in order to avoid conflicts)
+opencv-python-headless
+face_recognition==1.3.0
+
+# GPU-accelerated libraries (compatible versions)
+torch==2.2.0 --index-url https://download.pytorch.org/whl/cu118
+torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu118
+torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118
+
+# TensorFlow (2.12.x links against cuDNN 8.5 which matches PyTorch 2.0.1 binaries)
+tensorflow==2.11.1
+keras==2.11.0
+
+# Face detection and recognition (compatible versions)
+retina-face==0.0.17
+
+# Vector database and search
+faiss-gpu==1.7.2
+qdrant-client
+
+# Media processing
+moviepy
+imageio
+imageio-ffmpeg
+
+# Audio processing (compatible version)
+speechbrain
+
+# NLP and graph
+gliner==0.1.12
+neo4j==5.19.0
+
+# Relation extraction
+transformers==4.41.0
+sentencepiece
+
+# File monitoring and storage
+watchdog
+minio
+
+# Task queue
+rq
+redis
