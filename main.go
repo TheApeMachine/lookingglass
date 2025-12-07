@@ -248,7 +248,9 @@ func setupModule(m *Module) error {
 	if _, err := os.Stat(pythonPath); os.IsNotExist(err) {
 		fmt.Printf("Creating venv in %s...\n", venvPath)
 		// Clean up any partial/broken venv
-		os.RemoveAll(venvPath)
+		if err := os.RemoveAll(venvPath); err != nil {
+			return fmt.Errorf("failed to clean up broken venv at %s: %w", venvPath, err)
+		}
 
 		cmd := exec.Command(m.Python, "-m", "venv", venvPath)
 		cmd.Stdout = os.Stdout
@@ -322,42 +324,6 @@ func setupModule(m *Module) error {
 	return nil
 }
 
-func ensurePlaywrightBrowsers(m *Module) error {
-	if m.Path != "crawler" {
-		return nil
-	}
-
-	venvPath := filepath.Join(m.Path, "venv")
-	pythonPath := filepath.Join(venvPath, "bin", "python")
-
-	// Check if venv exists
-	if _, err := os.Stat(pythonPath); os.IsNotExist(err) {
-		return fmt.Errorf("venv does not exist for %s", m.Path)
-	}
-
-	absVenvPath, err := filepath.Abs(venvPath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve venv path: %w", err)
-	}
-	pythonCmd := filepath.Join(absVenvPath, "bin", "python")
-
-	fmt.Printf("Ensuring Playwright browsers are installed for %s...\n", m.Path)
-
-	// Install chromium (includes headless_shell)
-	cmd := exec.Command(pythonCmd, "-m", "playwright", "install", "chromium")
-	cmd.Dir = m.Path
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, fmt.Sprintf("VIRTUAL_ENV=%s", absVenvPath))
-	cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s:%s", filepath.Join(absVenvPath, "bin"), os.Getenv("PATH")))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to install playwright browsers: %w", err)
-	}
-
-	return nil
-}
-
 func runService(ctx context.Context, wg *sync.WaitGroup, svc Service) {
 	defer wg.Done()
 
@@ -423,11 +389,18 @@ func runService(ctx context.Context, wg *sync.WaitGroup, svc Service) {
 			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
 				fmt.Printf("%s SIGTERM failed: %v\n", svc.Name, err)
 			}
-			time.AfterFunc(5*time.Second, func() {
+			// Wait for process to exit after SIGTERM or force-kill after timeout
+			select {
+			case err := <-errChan:
+				// Process exited after SIGTERM; log if needed
+				if err != nil && ctx.Err() == nil {
+					fmt.Printf("%s exited with error after SIGTERM: %v\n", svc.Name, err)
+				}
+			case <-time.After(5 * time.Second):
 				if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 					fmt.Printf("%s SIGKILL failed: %v\n", svc.Name, err)
 				}
-			})
+			}
 		}
 	case err := <-errChan:
 		if err != nil {
@@ -456,5 +429,8 @@ func streamOutput(r io.Reader, name string, colorFunc func(a ...interface{}) str
 
 		prefix := fmt.Sprintf("[%s] %s%s | ", timestamp, name, padding)
 		fmt.Printf("%s%s\n", colorFunc(prefix), scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("[%s] %s output stream error: %v\n", time.Now().Format("15:04:05"), name, err)
 	}
 }

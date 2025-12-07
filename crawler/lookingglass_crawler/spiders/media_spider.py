@@ -116,7 +116,12 @@ class MediaSpider(CrawlSpider):
 
     def handle_error(self, failure):
         """Handle request errors and continue crawling."""
-        self.logger.error(f"Request failed: {failure.request.url} - {failure.value}")
+        self.logger.error(
+            "Request failed: %s - %s\n%s",
+            getattr(failure.request, "url", "<no-url>"),
+            failure.value,
+            failure.getTraceback(),
+        )
         # Try to continue with other URLs if start URL fails
         # This prevents the spider from exiting immediately on first failure
 

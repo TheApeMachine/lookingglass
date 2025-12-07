@@ -440,13 +440,16 @@ def process_audio_upload(bucket_name, object_name, event_data=None):
         
         # Append transcript to DeepLake text dataset for downstream RAG
         try:
-            transcripts_ds.append({
-                "text": [text],
-                "bucket": [bucket_name],
-                "object_name": [object_name],
-                "source_video": [event_data.get("source_video") if event_data else None],
-            })
-            transcripts_ds.commit()
+            if transcripts_ds is not None:
+                transcripts_ds.append({
+                    "text": text,
+                    "bucket": bucket_name,
+                    "object_name": object_name,
+                    "source_video": event_data.get("source_video") if event_data else None,
+                })
+                transcripts_ds.commit()
+            else:
+                logger.warning("transcripts_ds not initialized; skipping transcript append.")
         except Exception as e:
             logger.warning(f"Failed to append transcript to DeepLake: {e}")
         

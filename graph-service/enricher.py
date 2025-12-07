@@ -269,7 +269,7 @@ def is_northdata_eligible_entity_type(entity_type: str) -> bool:
     entity_type_lower = entity_type.lower().strip()
     return any(eligible.lower() == entity_type_lower for eligible in northdata_types)
 
-async def search_northdata(entity_name: str, browser: Browser) -> List[Dict[str, Any]]:
+async def search_northdata(entity_name: str, entity_type: str, browser: Browser) -> List[Dict[str, Any]]:
     """Search Northdata for company/organization/person and extract result URLs."""
     if not is_northdata_eligible_entity_type(entity_type):
         return []
@@ -742,7 +742,7 @@ async def enrich_batch(driver, browser: Browser, batch_size: int = 5):
             # 1. Northdata lookup (for companies/organizations/people)
             if use_northdata:
                 logger.info(f"Performing Northdata lookup for {entity_name} ({entity_type})")
-                northdata_results = await search_northdata(entity_name, browser)
+                northdata_results = await search_northdata(entity_name, entity_type, browser)
                 
                 if northdata_results:
                     # Select top 2-3 Northdata results (highest scored)
