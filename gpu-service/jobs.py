@@ -7,11 +7,20 @@ import numpy as np
 from minio import Minio
 import face_recognition
 from retinaface import RetinaFace
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
+# Monkey-patch torchaudio.list_audio_backends to avoid AttributeError
+import torchaudio
+if not hasattr(torchaudio, 'list_audio_backends'):
+    # torchaudio 2.1+ removed list_audio_backends.
+    # SpeechBrain < 1.0.0 relies on it.
+    # We'll monkeypatch it to return an empty list or 'soundfile'
+    torchaudio.list_audio_backends = lambda: ['soundfile']
+
 from speechbrain.inference import EncoderDecoderASR
-from qdrant_client import QdrantClient, models
+import deeplake
 import time
 from redis.exceptions import BusyLoadingError
+import torch
 
 # Task queue
 from redis import Redis
@@ -30,11 +39,11 @@ if hasattr(tf, 'compat'):
 logger = logging.getLogger(__name__)
 
 # Environment variables
-MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'minio:9000')
+MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'localhost:9000')
 MINIO_USER = os.getenv('MINIO_USER', 'miniouser')
 MINIO_PASSWORD = os.getenv('MINIO_PASSWORD', 'miniopassword')
 MINIO_BUCKET = os.getenv('MINIO_BUCKET', 'scraped')
-QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 
@@ -51,25 +60,53 @@ if not minio_client.bucket_exists(MINIO_BUCKET):
     minio_client.make_bucket(MINIO_BUCKET)
     logger.info(f"Created MinIO bucket: {MINIO_BUCKET}")
 
-# Initialise Qdrant client
-qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY, https=False)
+def load_or_create_deeplake_dataset(path: str, creds: dict):
+    """Open DeepLake dataset; create if it does not exist."""
+    try:
+        ds_local = deeplake.open(path, creds=creds)
+        logger.info("Loaded DeepLake dataset at %s", path)
+        return ds_local
+    except Exception as e:
+        logger.warning("DeepLake dataset missing or unreachable (%s); attempting to create it.", e)
+        try:
+            ds_local = deeplake.create(path, creds=creds)
+            logger.info("Created new DeepLake dataset at %s", path)
+            return ds_local
+        except Exception as ce:
+            logger.error("Failed to create DeepLake dataset at %s: %s", path, ce)
+            raise
 
-# Ensure the 'faces' collection exists (vector size 128, cosine distance)
-try:
-    qdrant.get_collection(collection_name="faces")
-except Exception:
-    logger.info("Creating Qdrant collection 'faces'")
-    qdrant.create_collection(
-        collection_name="faces",
-        vectors_config=models.VectorParams(size=128, distance=models.Distance.COSINE)
-    )
+
+# Initialize DeepLake Dataset
+# We use the MinIO bucket 'scraped' but store the DeepLake dataset in a sub-path 'faces_db'
+# Note: DeepLake S3 creds are passed explicitly
+DEEPLAKE_PATH = f"s3://{MINIO_BUCKET}/faces_db"
+DEEPLAKE_CREDS = {
+    "aws_access_key_id": MINIO_USER,
+    "aws_secret_access_key": MINIO_PASSWORD,
+    "endpoint_url": f"http://{MINIO_ENDPOINT}"
+}
+
+ds = load_or_create_deeplake_dataset(DEEPLAKE_PATH, DEEPLAKE_CREDS)
+
+# Optional DeepLake dataset for transcriptions (text RAG)
+TRANSCRIPTS_PATH = f"s3://{MINIO_BUCKET}/transcripts_db"
+transcripts_ds = load_or_create_deeplake_dataset(TRANSCRIPTS_PATH, DEEPLAKE_CREDS)
+
+def get_device():
+    """Determine the best available device for inference."""
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
 
 def get_redis_connection():
     """Get a Redis connection, retrying if Redis is loading data."""
     for attempt in range(12):  # retry for ~1 minute
         try:
             r = Redis(
-                host=os.getenv("REDIS_HOST", "redis"),
+                host=os.getenv("REDIS_HOST", "localhost"),
                 port=int(os.getenv("REDIS_PORT", 6379)),
                 decode_responses=True # Important for string commands
             )
@@ -97,9 +134,12 @@ def get_asr_model():
     global _asr_model
     if _asr_model is None:
         try:
+            device = get_device()
+            logger.info(f"Loading ASR model on device: {device}")
             _asr_model = EncoderDecoderASR.from_hparams(
                 source="speechbrain/asr-conformer-transformerlm-librispeech",
                 savedir="pretrained_models/asr-transformer-transformerlm-librispeech",
+                run_opts={"device": device}
             )
         except Exception as e:
             logger.error(f"Failed to load ASR model: {str(e)}")
@@ -164,7 +204,7 @@ def extract_and_upsert_faces(
     metadata: dict,
     frame_idx: int | None = None,
 ) -> int:
-    """Detect faces, encode embeddings and upsert to Qdrant.
+    """Detect faces, encode embeddings and upsert to DeepLake.
 
     Returns the number of faces upserted from this frame.
     """
@@ -174,42 +214,55 @@ def extract_and_upsert_faces(
         return 0
 
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    points: list[models.PointStruct] = []
+    
+    # Prepare batch data
+    embeddings = []
+    locations = []
+    metadatas = []
+    object_names = []
 
     for idx, (face_key, face_data) in enumerate(faces.items()):
         try:
             x1, y1, x2, y2 = face_data["facial_area"]
-            face_location = (int(y1), int(x2), int(y2), int(x1))
-            enc = face_recognition.face_encodings(frame_rgb, [face_location])
+            face_location = [int(y1), int(x2), int(y2), int(x1)]
+            enc = face_recognition.face_encodings(frame_rgb, [tuple(face_location)])
             if not enc:
                 continue
 
             landmarks = {
                 k: [float(v[0]), float(v[1])] for k, v in face_data["landmarks"].items()
             }
+            
+            face_id = _make_face_id(bucket_name, object_name, frame_idx, idx)
+            
+            embeddings.append(enc[0].tolist())
+            locations.append(face_location)
+            object_names.append(object_name)
+            metadatas.append({
+                "id": face_id,
+                "bucket": bucket_name,
+                "object_name": object_name,
+                "source_url": metadata.get("source-url", ""),
+                "media_url": metadata.get("media-url", ""),
+                "frame_idx": frame_idx,
+                "confidence": float(face_data["score"]),
+                "landmarks": landmarks,
+                "face_idx": idx,
+            })
 
-            point = models.PointStruct(
-                id=_make_face_id(bucket_name, object_name, frame_idx, idx),
-                vector=enc[0].tolist(),
-                payload={
-                    "bucket": bucket_name,
-                    "object_name": object_name,
-                    "source_url": metadata.get("source-url", ""),
-                    "media_url": metadata.get("media-url", ""),
-                    "frame_idx": frame_idx,
-                    "face_location": [int(y1), int(x2), int(y2), int(x1)],
-                    "confidence": float(face_data["score"]),
-                    "landmarks": landmarks,
-                    "face_idx": idx,
-                },
-            )
-            points.append(point)
         except Exception as e:
             logger.warning(f"Failed to encode face {idx} in {object_name}: {e}")
 
-    if points:
-        qdrant.upsert(collection_name="faces", points=points, wait=True)
-    return len(points)
+    if embeddings:
+        ds.append({
+            "embedding": embeddings,
+            "face_location": locations,
+            "metadata": metadatas,
+            "object_name": object_names
+        })
+        ds.commit()
+        
+    return len(embeddings)
 
 def process_image_upload(bucket_name, object_name, event_data=None):
     """
@@ -385,6 +438,21 @@ def process_audio_upload(bucket_name, object_name, event_data=None):
         with open(transcription_path, "w") as f:
             f.write(text)
         
+        # Append transcript to DeepLake text dataset for downstream RAG
+        try:
+            if transcripts_ds is not None:
+                transcripts_ds.append({
+                    "text": text,
+                    "bucket": bucket_name,
+                    "object_name": object_name,
+                    "source_video": event_data.get("source_video") if event_data else None,
+                })
+                transcripts_ds.commit()
+            else:
+                logger.warning("transcripts_ds not initialized; skipping transcript append.")
+        except Exception as e:
+            logger.warning(f"Failed to append transcript to DeepLake: {e}")
+        
         logger.info(f"Transcription for {object_name} saved to {transcription_path}")
         
         return {"status": "success", "transcription": text}
@@ -405,29 +473,23 @@ def cleanup_processed_item(bucket_name, object_name, event_data=None):
     try:
         logger.info(f"Cleaning up deleted item: {bucket_name}/{object_name}")
         
-        # Remove faces from Qdrant that belong to this object
-        # We'll filter by object_name in the payload
+        deleted = 0
+        # Best-effort deletion using TQL (DeepLake 4.x)
         try:
-            qdrant.delete(
-                collection_name='faces',
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="object_name",
-                                match=models.MatchValue(value=object_name),
-                            )
-                        ]
-                    )
-                ),
-                wait=True,
-            )
-            logger.info(f"Deleted face embeddings for {object_name}")
-
+            tql = f"DELETE WHERE object_name = '{object_name}'"
+            view = ds.query(tql)
+            # Some DeepLake versions return a view; count length if available
+            if view is not None:
+                deleted = len(view)
+            logger.info(f"Deleted {deleted} rows for object {object_name} via TQL")
         except Exception as e:
-            logger.warning(f"Could not clean up embeddings for {object_name}: {str(e)}")
+            logger.warning(f"DeepLake delete via TQL failed for {object_name}: {e}")
         
-        return {"status": "success", "message": f"Cleanup completed for {object_name}"}
+        return {
+            "status": "success",
+            "deleted": deleted,
+            "message": f"Cleanup completed for {object_name}, removed {deleted} rows"
+        }
         
     except Exception as e:
         logger.error(f"Error cleaning up {object_name}: {str(e)}")

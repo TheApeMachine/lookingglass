@@ -23,3 +23,5 @@ index_to_id.pkl
 
 # Miscellaneous
 .DS_Store
+crawler/.scrapy/
+crawler/crawls

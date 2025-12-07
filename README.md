@@ -93,11 +93,10 @@ It features an intelligent web crawler with advanced anti-detection capabilities
 
 ### Vector Search & Storage
 
-- **Qdrant Vector Database**:
-  - 128-dimensional face embeddings
-  - Cosine similarity matching
-  - Efficient metadata indexing
-  - Real-time similarity search
+- **DeepLake Vector Store (MinIO-backed)**:
+  - 128-dimensional face embeddings with cosine similarity TQL
+  - Metadata-rich rows for bucket/object/source tracking
+  - Supports hybrid scoring and dataset growth on object uploads
 - **MinIO Object Storage**:
   - Scalable file storage with metadata
   - Bucket notifications for processing triggers

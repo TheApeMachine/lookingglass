@@ -1,5 +1,6 @@
 scrapy>=2.9,<2.11
 scrapy-patchright
+playwright
 itemadapter
 requests
 minio

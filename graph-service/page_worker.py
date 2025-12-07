@@ -1,302 +1,341 @@
 import os
+import asyncio
 import logging
-import time
-import itertools
-import warnings
+import json
+import hashlib
+import re
+from typing import List, Dict, Optional
+from pydantic import BaseModel, ValidationError
+from agents import Agent, Runner, OpenAIChatCompletionsModel
+from openai import AsyncOpenAI
 from minio import Minio
-from gliner import GLiNER
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from neo4j import GraphDatabase
 from html_to_markdown import convert_to_markdown
-import re
-alphabets= "([A-Za-z])"
-prefixes = "(Mr|St|Mrs|Ms|Dr)[.]"
-suffixes = "(Inc|Ltd|Jr|Sr|Co)"
-starters = "(Mr|Mrs|Ms|Dr|Prof|Capt|Cpt|Lt|He\s|She\s|It\s|They\s|Their\s|Our\s|We\s|But\s|However\s|That\s|This\s|Wherever)"
-acronyms = "([A-Z][.][A-Z][.](?:[A-Z][.])?)"
-websites = "[.](com|net|org|io|gov|edu|me)"
-digits = "([0-9])"
-multiple_dots = r'\.{2,}'
 
+# --- Logging & Config ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("kg-worker")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("page-worker")
-warnings.filterwarnings("ignore", message="Sentence of length .* has been truncated")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "lm-studio")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "openai/gpt-oss-20b")
 
-# Environment variables
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+logger.info(f"Using OpenAI-compatible endpoint: {OPENAI_BASE_URL} with model: {OPENAI_MODEL}")
+
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_USER = os.getenv("MINIO_USER", "miniouser")
 MINIO_PASSWORD = os.getenv("MINIO_PASSWORD", "miniopassword")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "scraped")
+MINIO_PREFIX = os.getenv("MINIO_PREFIX", "pages/")  # e.g., your HTML files stored there
 
-NEO4J_HOST = os.getenv("NEO4J_HOST", "neo4j")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
-NEO4J_URI = f"bolt://{NEO4J_HOST}:7687"
+neo_driver = GraphDatabase.driver(
+    os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+    auth=(os.getenv("NEO4J_USER","neo4j"), os.getenv("NEO4J_PASSWORD","password"))
+)
 
-# Clients
-minio_client = Minio(MINIO_ENDPOINT, access_key=MINIO_USER, secret_key=MINIO_PASSWORD, secure=False)
-# Neo4j driver (retry because the DB container may not be ready immediately)
-neo_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-for attempt in range(12):  # retry for ~1 minute
-    try:
-        neo_driver.verify_connectivity()
-        logger.info("Connected to Neo4j")
-        break
-    except Exception as e:
-        logger.warning(f"Neo4j not available yet (attempt {attempt + 1}/12): {e}")
-        time.sleep(5)
-else:
-    logger.error("Unable to connect to Neo4j after multiple attempts.")
-    raise
+minio_client = Minio(
+    MINIO_ENDPOINT,
+    access_key=MINIO_USER,
+    secret_key=MINIO_PASSWORD,
+    secure=False
+)
 
-# Models (lazy)
-_ner_model = None
-_re_model = None
-_re_tokenizer = None
+# --- KG extraction schema & agent ---
+# Model for what the agent returns (without IDs)
+class EntityInput(BaseModel):
+    name: str
+    type: str
+    metadata: Optional[Dict[str, str]] = None  # Additional metadata about the entity
 
-def get_ner_model():
-    global _ner_model
-    if _ner_model is None:
-        _ner_model = GLiNER.from_pretrained("numind/NuNER_Zero")
-    return _ner_model
+class RelationInput(BaseModel):
+    origin: str  # Entity name (not ID)
+    destination: str  # Entity name (not ID)
+    type: str
 
-def split_into_sentences(text: str) -> list[str]:
-    """
-    Split the text into sentences.
+class KGExtractionInput(BaseModel):
+    entities: List[EntityInput]
+    relations: List[RelationInput]
 
-    If the text contains substrings "<prd>" or "<stop>", they would lead 
-    to incorrect splitting because they are used as markers for splitting.
+# Internal model with generated IDs
+class Entity(BaseModel):
+    id: str
+    name: str
+    type: str
+    metadata: Optional[Dict[str, str]] = None
 
-    :param text: text to be split into sentences
-    :type text: str
+class Relation(BaseModel):
+    origin: str  # Entity ID
+    destination: str  # Entity ID
+    type: str
 
-    :return: list of sentences
-    :rtype: list[str]
-    """
-    text = " " + text + "  "
-    text = text.replace("\n"," ")
-    text = re.sub(prefixes,"\\1<prd>",text)
-    text = re.sub(websites,"<prd>\\1",text)
-    text = re.sub(digits + "[.]" + digits,"\\1<prd>\\2",text)
-    text = re.sub(multiple_dots, lambda match: "<prd>" * len(match.group(0)) + "<stop>", text)
-    if "Ph.D" in text: text = text.replace("Ph.D.","Ph<prd>D<prd>")
-    text = re.sub("\s" + alphabets + "[.] "," \\1<prd> ",text)
-    text = re.sub(acronyms+" "+starters,"\\1<stop> \\2",text)
-    text = re.sub(alphabets + "[.]" + alphabets + "[.]" + alphabets + "[.]","\\1<prd>\\2<prd>\\3<prd>",text)
-    text = re.sub(alphabets + "[.]" + alphabets + "[.]","\\1<prd>\\2<prd>",text)
-    text = re.sub(" "+suffixes+"[.] "+starters," \\1<stop> \\2",text)
-    text = re.sub(" "+suffixes+"[.]"," \\1<prd>",text)
-    text = re.sub(" " + alphabets + "[.]"," \\1<prd>",text)
-    if "”" in text: text = text.replace(".”","”.")
-    if "\"" in text: text = text.replace(".\"","\".")
-    if "!" in text: text = text.replace("!\"","\"!")
-    if "?" in text: text = text.replace("?\"","\"?")
-    text = text.replace(".",".<stop>")
-    text = text.replace("?","?<stop>")
-    text = text.replace("!","!<stop>")
-    text = text.replace("<prd>",".")
-    sentences = text.split("<stop>")
-    sentences = [s.strip() for s in sentences]
-    if sentences and not sentences[-1]: sentences = sentences[:-1]
-    return sentences
+class KGExtractionResult(BaseModel):
+    entities: List[Entity]
+    relations: List[Relation]
 
-def get_re_model():
-    global _re_model, _re_tokenizer
-    if _re_model is None:
-        model_name = "Babelscape/rebel-large"
-        _re_tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-        _re_model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-    return _re_model, _re_tokenizer
-
-def _parse_rebel_span(text: str):
-    triples = []
-    current = {"subj": "", "rel": "", "obj": "", "cur": None}
-    for tok in text.split():
-        if tok == "<triplet>":
-            if current["subj"]:
-                triples.append((current["subj"].strip(), current["rel"].strip(), current["obj"].strip()))
-            current = {"subj": "", "rel": "", "obj": "", "cur": "subj"}
-        elif tok == "<subj>":
-            current["cur"] = "subj"
-        elif tok == "<obj>":
-            current["cur"] = "obj"
-        elif tok == "<rel>":
-            current["cur"] = "rel"
-        else:
-            if current["cur"]:
-                current[current["cur"]] += " " + tok
-    if current["subj"]:
-        triples.append((current["subj"].strip(), current["rel"].strip(), current["obj"].strip()))
-    return triples
-
-def extract_relations(text: str, max_len: int = 512):
-    model, tok = get_re_model()
-    triples_all = []
-    for i in range(0, len(text), max_len):
-        chunk = text[i:i+max_len]
-        inputs = tok(chunk, return_tensors="pt", truncation=True, max_length=512)
-        outputs = model.generate(**inputs, max_length=512, num_beams=3)
-        decoded = tok.batch_decode(outputs, skip_special_tokens=False)[0]
-        triples_all.extend(_parse_rebel_span(decoded))
-    return triples_all
-
-REL_MAP = {
-    "employee": "EMPLOYEE_OF",
-    "works_for": "EMPLOYEE_OF",
-    "employment": "EMPLOYEE_OF",
-    "founder": "FOUNDER_OF",
-    "founded_by": "FOUNDER_OF",
-    "founder_of": "FOUNDER_OF",
-    "partner": "PARTNER_OF",
-    "partner_of": "PARTNER_OF",
-    "affiliate": "PARTNER_OF",
-}
-
-# Accept the original text so we can extract spans without relying on a global variable
-def merge_entities(entities, text: str):
-    if not entities:
-        return []
-    merged = []
-    current = entities[0]
-    for next_entity in entities[1:]:
-        if next_entity['label'] == current['label'] and (next_entity['start'] == current['end'] + 1 or next_entity['start'] == current['end']):
-            current['text'] = text[current['start']: next_entity['end']].strip()
-            current['end'] = next_entity['end']
-        else:
-            merged.append(current)
-            current = next_entity
-    # Append the last entity
-    merged.append(current)
-    return merged
-
-def chunk_by_tokens(sentences, tokenizer, max_tok=384):
-    """
-    Generator to chunk sentences by token count.
-    """
-    buf, cur_len = [], 0
-    for s in sentences:
-        tokens = tokenizer.encode(s, add_special_tokens=False)
-        if cur_len + len(tokens) > max_tok and buf:
-            yield " ".join(buf)
-            buf, cur_len = [], 0
-        buf.append(s)
-        cur_len += len(tokens)
-    if buf:
-        yield " ".join(buf)
-
-
-def process_page_object(object_name: str):
-    try:
-        with minio_client.get_object(MINIO_BUCKET, object_name) as response:
-            html_bytes = response.read()
-        text = html_bytes.decode("utf-8", errors="ignore")
-        text = convert_to_markdown(text)
-
-        ner = get_ner_model()
-        ner_tokenizer = ner.tokenizer
-        labels = ["person", "organization", "location", "project", "initiative", "job"]
-        labels = [l.lower() for l in labels]
-
-        sentences = split_into_sentences(text)
-
-        found_entities = []
-
-        for chunk_text in chunk_by_tokens(sentences, ner_tokenizer, max_tok=384):
-            try:
-                entities = ner.predict_entities(chunk_text, labels, flat_ner=True, threshold=0.3)
-                # Merge adjacent token-level entities to form complete multi-word entities
-                entities = merge_entities(entities, chunk_text)
-
-                for entity in entities:
-                    found_entities.append(entity)
-            except Exception as e:
-                logger.warning(f"NER failed on chunk: {e}")
-
-        triples = extract_relations(text)
-
-        with neo_driver.session() as sess:
-            # Batch-create entities
-            entity_map = {
-                "person": "Person",
-                "organization": "Organization",
-                "job": "Job",
-                "project": "Project",
-                "location": "Location"
+kg_agent = Agent(
+    name="KG Extractor",
+    instructions=("""
+        Extract high-quality named entities and their relationships from the given text.
+        
+        Focus ONLY on:
+        - Specific, concrete named entities (e.g. people, organizations, companies, products, locations, events, etc.)
+        - Avoid generic descriptors, common nouns, or vague concepts
+        - Only extract entities that are explicitly mentioned and have clear identity
+        - Extract meaningful relationships between entities (e.g., "works_for", "located_in", "partner_of", "founder_of", "acquired_by", etc.)
+        
+        IMPORTANT - Entity Name Rules:
+        - Use ONLY canonical/base names - remove all modifiers, honorifics, and titles
+        - Do NOT include prefixes like "Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "Sir", "Lord", etc. in the name
+        - Do NOT include suffixes like "Jr.", "Sr.", "III", "PhD", "MD", etc. in the name
+        - Do NOT include company suffixes like "Inc.", "LLC", "Ltd.", "Corp.", etc. in the name
+        - Use the core, canonical name only (e.g., "John Smith" not "Dr. John Smith Jr.")
+        - If honorifics, titles, or other modifiers are relevant, include them in the metadata field instead
+        
+        For each entity, if there is additional metadata available, include it in the metadata field.
+        
+        Return exactly a JSON object matching this schema:
+        {
+          "entities": [
+            {
+              "name": "Canonical Entity Name (no modifiers)",
+              "type": "EntityType (e.g., Person, Organization, Location, Product)",
+              "metadata": {"key": "value"}
             }
-            for label, node_label in entity_map.items():
-                entities_to_create = list({e["text"] for e in found_entities if e["label"] == label})
-                if entities_to_create:
-                    sess.run(f"UNWIND $entities AS e MERGE (n:{node_label}:Entity {{name: e}})", entities=entities_to_create)
+          ],
+          "relations": [
+            {
+              "origin": "entity_name",
+              "destination": "entity_name",
+              "type": "relationship_type"
+            }
+          ]
+        }
+        
+        For relations, use the exact entity names from the entities array. No extra fields, comments, or markdown formatting.
+    """),
+    model=OpenAIChatCompletionsModel(
+        model=OPENAI_MODEL,
+        openai_client=openai_client
+    ),
+)
 
-            # Allow only triples whose subject AND object were detected by NuNER.
-            valid_entities = {e["text"] for e in found_entities}
+# --- Helpers ---
+def normalize_name(n: str) -> str:
+    """Normalize entity name for consistent ID generation (case-insensitive, trimmed)."""
+    # Trim and convert to lowercase for comparison
+    return n.strip().lower()
 
-            organization_entities = {e["text"] for e in found_entities if e["label"] == "organization"}
+def generate_entity_id(name: str) -> str:
+    """Generate a deterministic ID for an entity based on normalized name only."""
+    normalized_name = normalize_name(name)
+    # Use hash to create a fixed-length ID
+    return hashlib.sha256(normalized_name.encode('utf-8')).hexdigest()[:32]
+
+def process_kg_input(kg_input: KGExtractionInput) -> KGExtractionResult:
+    """Convert agent output (with names) to internal format (with IDs)."""
+    # Create mapping from entity name to ID
+    name_to_id = {}
+    entities = []
+    seen_ids = set()  # Track IDs to avoid duplicates within a single extraction
+    
+    for ent_input in kg_input.entities:
+        # Trim the name and generate ID based only on normalized name
+        trimmed_name = ent_input.name.strip()
+        entity_id = generate_entity_id(trimmed_name)
+        
+        # Only add if we haven't seen this ID in this extraction
+        if entity_id not in seen_ids:
+            seen_ids.add(entity_id)
+            name_to_id[ent_input.name] = entity_id
+            name_to_id[trimmed_name] = entity_id  # Also map trimmed version
+            entities.append(Entity(
+                id=entity_id,
+                name=trimmed_name,  # Store trimmed name
+                type=ent_input.type.strip(),  # Use model's type, trimmed
+                metadata=ent_input.metadata
+            ))
+        else:
+            # Entity already seen in this extraction, just add name mapping
+            name_to_id[ent_input.name] = entity_id
+            name_to_id[trimmed_name] = entity_id
+    
+    # Convert relations to use IDs instead of names
+    relations = []
+    for rel_input in kg_input.relations:
+        # Try both original and trimmed names (case-insensitive matching)
+        origin_name = rel_input.origin.strip()
+        dest_name = rel_input.destination.strip()
+        
+        # Try to find ID by normalized name if direct lookup fails
+        origin_id = name_to_id.get(rel_input.origin) or name_to_id.get(origin_name)
+        if not origin_id:
+            # Try case-insensitive lookup
+            origin_normalized = normalize_name(origin_name)
+            for name, eid in name_to_id.items():
+                if normalize_name(name) == origin_normalized:
+                    origin_id = eid
+                    break
+        
+        dest_id = name_to_id.get(rel_input.destination) or name_to_id.get(dest_name)
+        if not dest_id:
+            # Try case-insensitive lookup
+            dest_normalized = normalize_name(dest_name)
+            for name, eid in name_to_id.items():
+                if normalize_name(name) == dest_normalized:
+                    dest_id = eid
+                    break
+        
+        if origin_id and dest_id:
+            relations.append(Relation(
+                origin=origin_id,
+                destination=dest_id,
+                type=rel_input.type.strip()
+            ))
+        else:
+            logger.warning(f"Could not find entity IDs for relation: {rel_input.origin} -> {rel_input.destination}")
+    
+    return KGExtractionResult(entities=entities, relations=relations)
+
+def ingest_to_neo(kg: KGExtractionResult, source_url: str):
+    with neo_driver.session() as sess:
+        # First, ensure all entities exist with their properties
+        # MERGE on ID (based on normalized name) to avoid duplicates
+        for ent in kg.entities:
+            # Ensure name is trimmed
+            trimmed_name = ent.name.strip()
+            label = ent.type.strip()  # Trim type as well
             
-            pairs = list(itertools.combinations(organization_entities, 2))
-            if pairs:
-                sess.run(
-                    """
-                    UNWIND $pairs AS pair
-                    MERGE (o1:Organization {name: pair[0]})
-                    MERGE (o2:Organization {name: pair[1]})
-                    MERGE (o1)-[r:SOFT_RELATED]-(o2)
-                    ON CREATE SET r.shared_count = 1
-                    ON MATCH  SET r.shared_count = coalesce(r.shared_count, 0) + 1
-                    """,
-                    pairs=pairs,
-                )
-
-            # Batch-create relationships
-            valid_triples_by_type = {}
-            for subj, rel, obj in triples:
-                if subj in valid_entities and obj in valid_entities:
-                    edge = REL_MAP.get(rel.lower())
-                    if edge:
-                        if edge not in valid_triples_by_type:
-                            valid_triples_by_type[edge] = []
-                        valid_triples_by_type[edge].append({'subj': subj, 'obj': obj})
+            # Use MERGE to create or update node, ensuring uniqueness by id (name-based)
+            # Store name, source_url, type, and any metadata
+            set_clauses = ["n.name = $name", "n.type = $type", "n.source_url = $source_url"]
+            params = {"id": ent.id, "name": trimmed_name, "type": label, "source_url": source_url}
             
-            for edge_type, batch in valid_triples_by_type.items():
-                sess.run(
-                    f"""
-                    UNWIND $batch as pair
-                    MERGE (a:Entity {{name: pair.subj}})
-                    MERGE (b:Entity {{name: pair.obj}})
-                    MERGE (a)-[:`{edge_type}`]->(b)
-                    """,
-                    batch=batch
-                )
+            # Add metadata fields if present
+            if ent.metadata:
+                for key, value in ent.metadata.items():
+                    # Sanitize key for Neo4j property name (alphanumeric and underscore only)
+                    safe_key = "".join(c if c.isalnum() or c == "_" else "_" for c in key)
+                    set_clauses.append(f"n.{safe_key} = ${safe_key}")
+                    params[safe_key] = value
+            
+            # MERGE on ID first (name-based), then add label and set properties
+            # If node exists with different label, add the new label too
+            # Sanitize label for Neo4j (alphanumeric and underscore only)
+            safe_label = "".join(c if c.isalnum() or c == "_" else "_" for c in label)
+            query = f"""
+            MERGE (n {{id: $id}})
+            SET n:{safe_label}
+            SET {', '.join(set_clauses)}
+            """
+            sess.run(query, **params)
+        
+        # Then create relationships (using separate queries to avoid cartesian product)
+        for rel in kg.relations:
+            # Sanitize relationship type for Neo4j (alphanumeric and underscore only)
+            safe_rel_type = "".join(c if c.isalnum() or c == "_" else "_" for c in rel.type.strip())
+            # Match origin node first, then destination in the same query pattern
+            # This avoids cartesian product by connecting the patterns
+            query = f"""
+            MATCH (a {{id: $origin}})
+            WITH a
+            MATCH (b {{id: $destination}})
+            MERGE (a)-[r:`{safe_rel_type}`]->(b)
+            """
+            sess.run(query, origin=rel.origin, destination=rel.destination)
+    
+    logger.info(f"Ingested {len(kg.entities)} entities and {len(kg.relations)} relations into Neo4j.")
 
-    except Exception as e:
-        logger.error(f"Error processing {object_name}: {e}", exc_info=True)
+async def process_text(text: str, source_url: str = "") -> Optional[KGExtractionResult]:
+    # Run extraction using Runner
+    result = await Runner.run(kg_agent, text)
+    output = result.final_output
+    
+    # Parse JSON string response
+    if isinstance(output, str):
+        try:
+            # Try to extract JSON from markdown code blocks if present
+            json_str = output.strip()
+            if json_str.startswith("```"):
+                # Extract JSON from code block
+                lines = json_str.split("\n")
+                json_str = "\n".join(lines[1:-1]) if len(lines) > 2 else json_str
+            elif json_str.startswith("```json"):
+                lines = json_str.split("\n")
+                json_str = "\n".join(lines[1:-1]) if len(lines) > 2 else json_str
+            
+            # Parse JSON
+            data = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from agent response: {e}\nResponse: {output[:500]}")
+            return None
+        
+        # Validate with Pydantic (only reached if JSON parsing succeeded)
+        try:
+            # Ensure metadata field exists for entities that don't have it
+            if "entities" in data:
+                for entity in data["entities"]:
+                    if "metadata" not in entity:
+                        entity["metadata"] = None
+            # Parse as input format (with names, not IDs)
+            kg_input = KGExtractionInput(**data)
+            # Convert to result format (with generated IDs)
+            return process_kg_input(kg_input)
+        except ValidationError as e:
+            logger.error(f"Failed to validate KG extraction result: {e}\nParsed data: {data}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error creating KG extraction result: {e}\nData: {data}")
+            return None
+    
+    logger.warning(f"Unexpected output type from agent: {type(output)}")
+    return None
 
+def process_html(html_bytes: bytes) -> str:
+    html = html_bytes.decode("utf-8", errors="ignore")
+    return convert_to_markdown(html)
 
-def main():
-    # Ensure bucket exists
+# --- Main worker loop with MinIO listener ---
+def run_listener():
     if not minio_client.bucket_exists(MINIO_BUCKET):
-        logger.error(f"Bucket {MINIO_BUCKET} does not exist")
+        logger.error("Bucket does not exist: %s", MINIO_BUCKET)
         return
 
-    logger.info("Page worker listening for new HTML objects…")
-    while True:
-        try:
-            # Listen for new HTML uploads under pages/ prefix
-            events = minio_client.listen_bucket_notification(
-                MINIO_BUCKET,
-                prefix="pages/",
-                suffix=".html",
-                events=["s3:ObjectCreated:*"],
-            )
-            for notification in events:
-                for record in notification.get("Records", []):
-                    obj_name = record["s3"]["object"]["key"]
-                    logger.info(f"New HTML object: {obj_name}")
-                    process_page_object(obj_name)
-        except Exception as e:
-            logger.error(f"Listener error: {e}", exc_info=True)
-            time.sleep(5)
+    logger.info("Listening for new objects in bucket %s (prefix %s)...", MINIO_BUCKET, MINIO_PREFIX)
+
+    for event in minio_client.listen_bucket_notification(
+        MINIO_BUCKET,
+        prefix=MINIO_PREFIX,
+        suffix=".html",
+        events=["s3:ObjectCreated:*"]
+    ):
+        for rec in event.get("Records", []):
+            obj_name = rec["s3"]["object"]["key"]
+            logger.info("Detected new object: %s", obj_name)
+            try:
+                # Get object and its metadata
+                obj = minio_client.stat_object(MINIO_BUCKET, obj_name)
+                source_url = ""
+                
+                # Extract source URL from metadata
+                if obj.metadata:
+                    # MinIO metadata keys are lowercase with hyphens
+                    source_url = obj.metadata.get("x-amz-meta-source-url", "")
+                    if not source_url:
+                        # Try alternative metadata key formats
+                        source_url = obj.metadata.get("source-url", "")
+                
+                with minio_client.get_object(MINIO_BUCKET, obj_name) as resp:
+                    html_bytes = resp.read()
+                
+                md = process_html(html_bytes)
+                kg = asyncio.run(process_text(md, source_url=source_url))
+                if kg:
+                    ingest_to_neo(kg, source_url=source_url)
+                else:
+                    logger.warning("KG extraction returned None for %s", obj_name)
+            except Exception as e:
+                logger.error("Error processing %s: %s", obj_name, e, exc_info=True)
 
 if __name__ == "__main__":
-    main() 
+    run_listener()

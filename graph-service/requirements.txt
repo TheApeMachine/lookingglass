@@ -9,3 +9,6 @@ torch
 numpy
 html-to-markdown
 lxml
+openai-agents
+playwright
+aiohttp

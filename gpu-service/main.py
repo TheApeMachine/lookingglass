@@ -2,9 +2,10 @@ import os
 import logging
 import mimetypes
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import numpy as np
 import face_recognition
-from qdrant_client import QdrantClient, models
+import deeplake
 from minio import Minio
 import base64
 from redis import Redis
@@ -12,15 +13,20 @@ from rq import Queue
 from jobs import route_processing_job, cleanup_processed_item, get_media_type
 import threading
 
-q = Queue(connection=Redis(host='redis', port=6379))
+# Use environment variables for Redis connection
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+q = Queue(connection=Redis(host=REDIS_HOST, port=REDIS_PORT))
+
 app = Flask(__name__)
+CORS(app) # Enable CORS for development convenience
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 minio_client = Minio(
-    os.getenv("MINIO_ENDPOINT", "minio:9000"),
-    access_key=os.getenv("MINIO_USER", "minioadmin"),
+    os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+    access_key=os.getenv("MINIO_USER", "miniouser"),
     secret_key=os.getenv("MINIO_PASSWORD", "miniopassword"),
     secure=False
 )
@@ -73,20 +79,34 @@ listener_thread = threading.Thread(
 )
 listener_thread.start()
 
-QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY, https=False)
+def load_or_create_deeplake_dataset(path: str, creds: dict):
+    """Open DeepLake dataset; create if it does not exist."""
+    try:
+        ds_local = deeplake.open(path, creds=creds)
+        logger.info("Loaded DeepLake dataset at %s", path)
+        return ds_local
+    except Exception as e:
+        logger.warning("DeepLake dataset missing or unreachable (%s); attempting to create it.", e)
+        try:
+            ds_local = deeplake.create(path, creds=creds)
+            logger.info("Created new DeepLake dataset at %s", path)
+            return ds_local
+        except Exception as ce:
+            logger.error("Failed to create DeepLake dataset at %s: %s", path, ce)
+            raise
 
-try:
-    qdrant.get_collection(collection_name='faces')
-    logger.info("Collection 'faces' already exists.")
-except Exception:
-    logger.info("Collection 'faces' not found, creating it.")
-    qdrant.create_collection(
-        collection_name='faces',
-        vectors_config=models.VectorParams(size=128, distance=models.Distance.COSINE)
-    )
+
+# Initialize DeepLake Dataset
+# We use the MinIO bucket 'scraped' but store the DeepLake dataset in a sub-path 'faces_db'
+DEEPLAKE_PATH = f"s3://{MINIO_BUCKET}/faces_db"
+DEEPLAKE_CREDS = {
+    "aws_access_key_id": os.getenv("MINIO_USER", "miniouser"),
+    "aws_secret_access_key": os.getenv("MINIO_PASSWORD", "miniopassword"),
+    "endpoint_url": f"http://{os.getenv('MINIO_ENDPOINT', 'localhost:9000')}",
+    "s3_force_path_style": "true"
+}
+
+ds = load_or_create_deeplake_dataset(DEEPLAKE_PATH, DEEPLAKE_CREDS)
 
 @app.route('/lookup', methods=['POST'])
 def lookup():
@@ -104,31 +124,51 @@ def lookup():
         
         results = []
         for encoding in face_encodings:
-            hits = qdrant.search(
-                collection_name='faces',
-                query_vector=encoding,
-                limit=5,
-                score_threshold=0.5
-            )
-            face_matches = []
-            for hit in hits:
-                match = hit.payload
-                match['score'] = hit.score
+            # DeepLake Vector Search using TQL
+            try:
+                # Convert encoding to comma-separated string for SQL-like query
+                query_vec = ",".join(map(str, encoding))
+                tql = f"""
+                    SELECT metadata, face_location, object_name,
+                           COSINE_SIMILARITY(embedding, ARRAY[{query_vec}]) AS score
+                    ORDER BY score DESC
+                    LIMIT 5
+                """
+                view = ds.query(tql)
                 
-                try:
-                    image_obj = minio_client.get_object(match['bucket'], match['object_name'])
-                    image_bytes = image_obj.read()
-                    encoded_img = base64.b64encode(image_bytes).decode('utf-8')
-                    content_type, _ = mimetypes.guess_type(match['object_name'])
-                    if not content_type or not content_type.startswith('image/'):
-                        content_type = 'image/jpeg'
-                    match['image_data_uri'] = f"data:{content_type};base64,{encoded_img}"
-                except Exception as e:
-                    logger.error(f"Could not retrieve matched image from MinIO: {e}")
-                    match['image_data_uri'] = None
+                face_matches = []
+                # Iterate through results (DeepLake views are subscriptable)
+                for i in range(len(view)):
+                    match_metadata = view['metadata'][i].data(as_numpy=False)
+                    score_val = None
+                    try:
+                        score_arr = view['score'][i].numpy()
+                        if score_arr is not None:
+                            score_val = float(score_arr)
+                    except Exception:
+                        score_val = None
 
-                face_matches.append(match)
-            results.append(face_matches)
+                    match = match_metadata
+                    if score_val is not None:
+                        match["score"] = score_val
+                    
+                    try:
+                        image_obj = minio_client.get_object(match['bucket'], match['object_name'])
+                        image_bytes = image_obj.read()
+                        encoded_img = base64.b64encode(image_bytes).decode('utf-8')
+                        content_type, _ = mimetypes.guess_type(match['object_name'])
+                        if not content_type or not content_type.startswith('image/'):
+                            content_type = 'image/jpeg'
+                        match['image_data_uri'] = f"data:{content_type};base64,{encoded_img}"
+                    except Exception as e:
+                        logger.error(f"Could not retrieve matched image from MinIO: {e}")
+                        match['image_data_uri'] = None
+
+                    face_matches.append(match)
+                results.append(face_matches)
+            except Exception as e:
+                 logger.error(f"DeepLake query error: {e}")
+                 results.append([])
 
         return jsonify({
             'matches': results, 
