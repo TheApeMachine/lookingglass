@@ -203,15 +203,6 @@ func main() {
 	}
 	fmt.Println("All modules set up successfully.")
 
-	// Ensure Playwright browsers are installed for crawler services
-	for _, svc := range services {
-		if svc.Module.Path == "crawler" {
-			if err := ensurePlaywrightBrowsers(svc.Module); err != nil {
-				fmt.Printf("Warning: Failed to ensure Playwright browsers for %s: %v\n", svc.Name, err)
-			}
-		}
-	}
-
 	// 2. Run Services
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -268,7 +259,10 @@ func setupModule(m *Module) error {
 	}
 
 	// Resolve absolute path to python executable to ensure it works regardless of cmd.Dir
-	absVenvPath, _ := filepath.Abs(venvPath)
+	absVenvPath, err := filepath.Abs(venvPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve venv path: %w", err)
+	}
 	pythonCmd := filepath.Join(absVenvPath, "bin", "python")
 
 	// Install requirements
@@ -341,7 +335,10 @@ func ensurePlaywrightBrowsers(m *Module) error {
 		return fmt.Errorf("venv does not exist for %s", m.Path)
 	}
 
-	absVenvPath, _ := filepath.Abs(venvPath)
+	absVenvPath, err := filepath.Abs(venvPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve venv path: %w", err)
+	}
 	pythonCmd := filepath.Join(absVenvPath, "bin", "python")
 
 	fmt.Printf("Ensuring Playwright browsers are installed for %s...\n", m.Path)
@@ -377,8 +374,12 @@ func runService(ctx context.Context, wg *sync.WaitGroup, svc Service) {
 	cmd.Env = append(cmd.Env, svc.Env...)
 	// Also add venv/bin to PATH for convenience
 	venvBin := filepath.Join(svc.Module.Path, "venv", "bin")
-	absVenvBin, _ := filepath.Abs(venvBin)
-	cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s:%s", absVenvBin, os.Getenv("PATH")))
+	absVenvBin, err := filepath.Abs(venvBin)
+	if err != nil {
+		fmt.Printf("Warning: failed to resolve venv bin path for %s: %v\n", svc.Name, err)
+	} else {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s:%s", absVenvBin, os.Getenv("PATH")))
+	}
 
 	// Ensure the process group is killed on shutdown
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -418,8 +419,15 @@ func runService(ctx context.Context, wg *sync.WaitGroup, svc Service) {
 	case <-ctx.Done():
 		// Context cancelled, kill the process group
 		if cmd.Process != nil {
-			// Send SIGKILL to the process group (negative PID)
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			// Graceful shutdown: SIGTERM, then SIGKILL after timeout
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
+				fmt.Printf("%s SIGTERM failed: %v\n", svc.Name, err)
+			}
+			time.AfterFunc(5*time.Second, func() {
+				if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+					fmt.Printf("%s SIGKILL failed: %v\n", svc.Name, err)
+				}
+			})
 		}
 	case err := <-errChan:
 		if err != nil {
@@ -436,6 +444,8 @@ func runService(ctx context.Context, wg *sync.WaitGroup, svc Service) {
 func streamOutput(r io.Reader, name string, colorFunc func(a ...interface{}) string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(r)
+	// Allow longer log lines (up to 1MB) to avoid truncation
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	for scanner.Scan() {
 		timestamp := time.Now().Format("15:04:05")
 		// Calculate padding for alignment (assuming max name length ~15)

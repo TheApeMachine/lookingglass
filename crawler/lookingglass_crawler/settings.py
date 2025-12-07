@@ -20,7 +20,7 @@ START_URL = os.getenv('START_URL', 'https://www.flickr.com/search/?text=people/'
 CRAWL_MODE = os.getenv('CRAWL_MODE', 'image')
 
 # --- MinIO Settings ---
-MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'minio:9000')
+MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'localhost:9000')
 MINIO_USER = os.getenv('MINIO_USER', 'miniouser')
 MINIO_PASSWORD = os.getenv('MINIO_PASSWORD', 'miniopassword')
 MINIO_BUCKET = os.getenv('MINIO_BUCKET', 'scraped')
@@ -132,10 +132,8 @@ CLOSESPIDER_TIMEOUT = 0     # Don't close on timeout
 
 # Loop Prevention & Depth Limits
 # Prevents getting stuck in infinite loops (e.g. calendars, infinite pagination)
-DEPTH_LIMIT = os.getenv('DEPTH_LIMIT', 10) # 0 = no limit
+DEPTH_LIMIT = int(os.getenv('DEPTH_LIMIT', 0))  # 0 = no limit
 DEPTH_PRIORITY = 1 # Breadth-first search (process all links at depth 1 before depth 2)
-# SCHEDULER_DISK_QUEUE = 'scrapy.squeues.PickleFifoDiskQueue'
-# SCHEDULER_MEMORY_QUEUE = 'scrapy.squeues.FifoMemoryQueue'
 
 # Playwright specific settings - Undetected version for maximum stealth
 PLAYWRIGHT_BROWSER_TYPE = 'chromium'

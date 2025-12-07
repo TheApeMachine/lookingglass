@@ -6,6 +6,8 @@ import time
 import schedule
 import aiohttp
 import urllib.parse
+import re
+import html as html_stdlib
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, ValidationError
 from agents import Agent, Runner, OpenAIChatCompletionsModel, set_tracing_disabled
@@ -207,6 +209,35 @@ async def fetch_page_content(url: str, browser: Browser, timeout: int = 30000) -
         logger.error(f"Error fetching {url}: {e}")
         return None
 
+
+def extract_bar_charts(raw_html: str) -> str:
+    """Extract numeric bar chart data embedded in data-data attributes (e.g., Northdata)."""
+    snippets: List[str] = []
+    for match in re.finditer(r'data-data=(?P<quote>["\'])(?P<data>.+?)(?P=quote)', raw_html, flags=re.DOTALL):
+        try:
+            payload_raw = match.group("data")
+            payload_json = html_stdlib.unescape(payload_raw)
+            data_obj = json.loads(payload_json)
+        except Exception:
+            continue
+
+        items = data_obj.get("item", []) if isinstance(data_obj, dict) else []
+        for item in items:
+            item_title = item.get("title") or item.get("item") or "chart"
+            data_block = item.get("data", {})
+            rows = data_block.get("data") if isinstance(data_block, dict) else None
+            if not rows or not isinstance(rows, list):
+                continue
+            snippets.append(f"Chart: {item_title}")
+            for row in rows:
+                year = row.get("year")
+                formatted = row.get("formattedValue") or row.get("value0")
+                if year is None or formatted is None:
+                    continue
+                snippets.append(f"- {year}: {formatted}")
+
+    return "\n".join(snippets)
+
 def build_search_query(entity_name: str, entity_type: str) -> str:
     """Build a high-quality search query using Brave Search operators."""
     # Use exact phrase matching for the entity name to avoid partial matches
@@ -226,8 +257,7 @@ def build_search_query(entity_name: str, entity_type: str) -> str:
 def is_enrichment_eligible_entity_type(entity_type: str) -> bool:
     """Check if entity type is eligible for enrichment."""
     eligible_types = [
-        "Company", "Organization", "Person", "Publication", "EmailAddress", 
-        "Address", "Platform", "Product", "Institute", "Award", "Event"
+        "company", "organization", "person", "emailaddress", "address", "institute", "event"
     ]
     # Case-insensitive matching
     entity_type_lower = entity_type.lower().strip()
@@ -235,12 +265,15 @@ def is_enrichment_eligible_entity_type(entity_type: str) -> bool:
 
 def is_northdata_eligible_entity_type(entity_type: str) -> bool:
     """Check if entity type is eligible for Northdata lookup (subset of enrichment-eligible types)."""
-    northdata_types = ["Company", "Organization", "Person"]
+    northdata_types = ["company", "organization", "person"]
     entity_type_lower = entity_type.lower().strip()
     return any(eligible.lower() == entity_type_lower for eligible in northdata_types)
 
 async def search_northdata(entity_name: str, browser: Browser) -> List[Dict[str, Any]]:
     """Search Northdata for company/organization/person and extract result URLs."""
+    if not is_northdata_eligible_entity_type(entity_type):
+        return []
+    
     try:
         # Build search URL
         query_param = urllib.parse.quote(entity_name)
@@ -423,8 +456,11 @@ async def enrich_entity_page(entity_id: str, entity_name: str, entity_type: str,
         if not html:
             return None
         
-        # Convert to markdown
+        # Convert to markdown and append extracted chart data (e.g., Northdata bar charts)
+        chart_snippets = extract_bar_charts(html)
         markdown = convert_to_markdown(html)
+        if chart_snippets:
+            markdown = f"{markdown}\n\nExtracted Charts:\n{chart_snippets}"
         
         # Build entity context information
         entity_context_parts = [f"Name: {entity_name}", f"Type: {entity_type}"]
@@ -639,9 +675,7 @@ def get_nodes_to_enrich(driver, limit: int = 10) -> List[Dict[str, Any]]:
         WHERE n.source_url IS NOT NULL
           AND n.name IS NOT NULL
           AND (n.enriched_at IS NULL OR n.enriched_at < timestamp() - 86400000)
-          AND ANY(label IN labels(n) WHERE label IN ['Company', 'Organization', 'Person', 'Publication', 
-                                                       'EmailAddress', 'Address', 'Platform', 'Product', 
-                                                       'Institute', 'Award', 'Event'])
+          AND ANY(label IN labels(n) WHERE label IN ['Company', 'Organization', 'Person', 'EmailAddress', 'Address', 'Institute', 'Event'])
         WITH n, COUNT { (n)--() } AS rel_count
         ORDER BY rel_count ASC, n.name ASC
         LIMIT $limit

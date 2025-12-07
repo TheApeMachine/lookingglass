@@ -79,6 +79,23 @@ listener_thread = threading.Thread(
 )
 listener_thread.start()
 
+def load_or_create_deeplake_dataset(path: str, creds: dict):
+    """Open DeepLake dataset; create if it does not exist."""
+    try:
+        ds_local = deeplake.open(path, creds=creds)
+        logger.info("Loaded DeepLake dataset at %s", path)
+        return ds_local
+    except Exception as e:
+        logger.warning("DeepLake dataset missing or unreachable (%s); attempting to create it.", e)
+        try:
+            ds_local = deeplake.create(path, creds=creds)
+            logger.info("Created new DeepLake dataset at %s", path)
+            return ds_local
+        except Exception as ce:
+            logger.error("Failed to create DeepLake dataset at %s: %s", path, ce)
+            raise
+
+
 # Initialize DeepLake Dataset
 # We use the MinIO bucket 'scraped' but store the DeepLake dataset in a sub-path 'faces_db'
 DEEPLAKE_PATH = f"s3://{MINIO_BUCKET}/faces_db"
@@ -89,11 +106,7 @@ DEEPLAKE_CREDS = {
     "s3_force_path_style": "true"
 }
 
-try:
-    ds = deeplake.open(DEEPLAKE_PATH, creds=DEEPLAKE_CREDS)
-    logger.info(f"Loaded existing DeepLake dataset at {DEEPLAKE_PATH}")
-except Exception as e:
-    logger.error(f"Failed to load DeepLake dataset at {DEEPLAKE_PATH}: {e}")
+ds = load_or_create_deeplake_dataset(DEEPLAKE_PATH, DEEPLAKE_CREDS)
 
 @app.route('/lookup', methods=['POST'])
 def lookup():
@@ -115,17 +128,29 @@ def lookup():
             try:
                 # Convert encoding to comma-separated string for SQL-like query
                 query_vec = ",".join(map(str, encoding))
-                tql = f"SELECT * ORDER BY COSINE_SIMILARITY(embedding, ARRAY[{query_vec}]) DESC LIMIT 5"
+                tql = f"""
+                    SELECT metadata, face_location, object_name,
+                           COSINE_SIMILARITY(embedding, ARRAY[{query_vec}]) AS score
+                    ORDER BY score DESC
+                    LIMIT 5
+                """
                 view = ds.query(tql)
                 
                 face_matches = []
                 # Iterate through results (DeepLake views are subscriptable)
                 for i in range(len(view)):
                     match_metadata = view['metadata'][i].data(as_numpy=False)
-                    # Add score if available (TQL doesn't always return score explicitly in select * unless requested)
-                    # but ordering works. We can assume descending relevance.
-                    # Ideally we select COSINE_SIMILARITY(...) as score, but let's keep it simple first.
+                    score_val = None
+                    try:
+                        score_arr = view['score'][i].numpy()
+                        if score_arr is not None:
+                            score_val = float(score_arr)
+                    except Exception:
+                        score_val = None
+
                     match = match_metadata
+                    if score_val is not None:
+                        match["score"] = score_val
                     
                     try:
                         image_obj = minio_client.get_object(match['bucket'], match['object_name'])

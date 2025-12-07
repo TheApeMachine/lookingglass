@@ -14,7 +14,7 @@ GPU_WORKER_URL = os.getenv("GPU_WORKER_URL", "http://gpu-worker:5001/lookup")
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg', 'gif'}
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 @app.route('/')
 def home():

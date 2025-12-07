@@ -109,9 +109,10 @@ class MediaSpider(CrawlSpider):
                     errback=self.handle_error,
                     dont_filter=True  # Always crawl start URLs, bypass DeltaFetch
                 )
+            except (ValueError, TypeError) as e:
+                self.logger.exception('Failed to create request for %s', url)
             except Exception as e:
-                # Log errors at error level only
-                self.logger.error(f'Failed to create request for {url}: {e}')
+                self.logger.exception('Unexpected error for %s: %s', url, e)
 
     def handle_error(self, failure):
         """Handle request errors and continue crawling."""

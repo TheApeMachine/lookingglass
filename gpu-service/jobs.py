@@ -60,6 +60,23 @@ if not minio_client.bucket_exists(MINIO_BUCKET):
     minio_client.make_bucket(MINIO_BUCKET)
     logger.info(f"Created MinIO bucket: {MINIO_BUCKET}")
 
+def load_or_create_deeplake_dataset(path: str, creds: dict):
+    """Open DeepLake dataset; create if it does not exist."""
+    try:
+        ds_local = deeplake.open(path, creds=creds)
+        logger.info("Loaded DeepLake dataset at %s", path)
+        return ds_local
+    except Exception as e:
+        logger.warning("DeepLake dataset missing or unreachable (%s); attempting to create it.", e)
+        try:
+            ds_local = deeplake.create(path, creds=creds)
+            logger.info("Created new DeepLake dataset at %s", path)
+            return ds_local
+        except Exception as ce:
+            logger.error("Failed to create DeepLake dataset at %s: %s", path, ce)
+            raise
+
+
 # Initialize DeepLake Dataset
 # We use the MinIO bucket 'scraped' but store the DeepLake dataset in a sub-path 'faces_db'
 # Note: DeepLake S3 creds are passed explicitly
@@ -70,11 +87,11 @@ DEEPLAKE_CREDS = {
     "endpoint_url": f"http://{MINIO_ENDPOINT}"
 }
 
-try:
-    ds = deeplake.open('s3://...', creds = DEEPLAKE_CREDS)
-    logger.info(f"Loaded existing DeepLake dataset at {DEEPLAKE_PATH}")
-except Exception as e:
-    logger.error(f"Failed to load DeepLake dataset at {DEEPLAKE_PATH}: {e}")
+ds = load_or_create_deeplake_dataset(DEEPLAKE_PATH, DEEPLAKE_CREDS)
+
+# Optional DeepLake dataset for transcriptions (text RAG)
+TRANSCRIPTS_PATH = f"s3://{MINIO_BUCKET}/transcripts_db"
+transcripts_ds = load_or_create_deeplake_dataset(TRANSCRIPTS_PATH, DEEPLAKE_CREDS)
 
 def get_device():
     """Determine the best available device for inference."""
@@ -421,6 +438,18 @@ def process_audio_upload(bucket_name, object_name, event_data=None):
         with open(transcription_path, "w") as f:
             f.write(text)
         
+        # Append transcript to DeepLake text dataset for downstream RAG
+        try:
+            transcripts_ds.append({
+                "text": [text],
+                "bucket": [bucket_name],
+                "object_name": [object_name],
+                "source_video": [event_data.get("source_video") if event_data else None],
+            })
+            transcripts_ds.commit()
+        except Exception as e:
+            logger.warning(f"Failed to append transcript to DeepLake: {e}")
+        
         logger.info(f"Transcription for {object_name} saved to {transcription_path}")
         
         return {"status": "success", "transcription": text}
@@ -441,14 +470,23 @@ def cleanup_processed_item(bucket_name, object_name, event_data=None):
     try:
         logger.info(f"Cleaning up deleted item: {bucket_name}/{object_name}")
         
-        # DeepLake doesn't explicitly support row deletion in all versions in a simple way
-        # without TQL or reloading. For this Quickstart integration, we will log.
-        # Ideally: ds.query(f"DELETE FROM data WHERE object_name = '{object_name}'")
-        # For now, we assume append-only or managed externally.
+        deleted = 0
+        # Best-effort deletion using TQL (DeepLake 4.x)
+        try:
+            tql = f"DELETE WHERE object_name = '{object_name}'"
+            view = ds.query(tql)
+            # Some DeepLake versions return a view; count length if available
+            if view is not None:
+                deleted = len(view)
+            logger.info(f"Deleted {deleted} rows for object {object_name} via TQL")
+        except Exception as e:
+            logger.warning(f"DeepLake delete via TQL failed for {object_name}: {e}")
         
-        logger.info(f"Cleanup for {object_name} deferred (DeepLake append-only optimization)")
-        
-        return {"status": "success", "message": f"Cleanup deferred for {object_name}"}
+        return {
+            "status": "success",
+            "deleted": deleted,
+            "message": f"Cleanup completed for {object_name}, removed {deleted} rows"
+        }
         
     except Exception as e:
         logger.error(f"Error cleaning up {object_name}: {str(e)}")
