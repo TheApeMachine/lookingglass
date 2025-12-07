@@ -17,7 +17,7 @@ class MediaSpider(CrawlSpider):
         
         # Get start_urls from spider arguments or Scrapy settings.
         # This allows configuring the crawl target via docker-compose or command line.
-        urls = os.getenv('START_URL', 'https://www.flickr.com')
+        urls = os.getenv('START_URL', 'https://fanfactory.nl')
 
         # Ensure that start_urls is a list of strings.
         if isinstance(urls, str):
@@ -64,7 +64,7 @@ class MediaSpider(CrawlSpider):
 
         # MinIO setup for page HTML upload
         self.minio_client = Minio(
-            os.getenv('MINIO_ENDPOINT', 'minio:9000'),
+            os.getenv('MINIO_ENDPOINT', 'localhost:9000'),
             access_key=os.getenv('MINIO_USER', 'miniouser'),
             secret_key=os.getenv('MINIO_PASSWORD', 'miniopassword'),
             secure=False
@@ -107,7 +107,7 @@ class MediaSpider(CrawlSpider):
                         'DNT': '1',
                     },
                     errback=self.handle_error,
-                    dont_filter=False
+                    dont_filter=True  # Always crawl start URLs, bypass DeltaFetch
                 )
             except Exception as e:
                 # Log errors at error level only
@@ -115,8 +115,9 @@ class MediaSpider(CrawlSpider):
 
     def handle_error(self, failure):
         """Handle request errors and continue crawling."""
-        # Don't log every failed request - too noisy
         self.logger.error(f"Request failed: {failure.request.url} - {failure.value}")
+        # Try to continue with other URLs if start URL fails
+        # This prevents the spider from exiting immediately on first failure
 
     # ----------------------------------------
     # HTML page handling

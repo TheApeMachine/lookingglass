@@ -17,6 +17,7 @@ TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
 # --- Custom Settings ---
 START_URL = os.getenv('START_URL', 'https://www.flickr.com/search/?text=people/')
+CRAWL_MODE = os.getenv('CRAWL_MODE', 'image')
 
 # --- MinIO Settings ---
 MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'minio:9000')
@@ -33,12 +34,18 @@ ITEM_PIPELINES = {
     'lookingglass_crawler.pipelines.MinioMediaPipeline': 100,
 }
 
+# --- Job Directory for Pausing/Resuming ---
+# This allows the crawler to resume from where it left off.
+JOBDIR = os.getenv('JOBDIR', 'crawls/lookingglass-state')
+
 # --- DeltaFetch Settings ---
 SPIDER_MIDDLEWARES = {
      'scrapy_deltafetch.DeltaFetch': 100,
 }
 
 DELTAFETCH_ENABLED = True
+# Use unique database per crawler instance to avoid conflicts
+DELTAFETCH_DB = f'deltafetch_{CRAWL_MODE}.db'
 
 # Enhanced Resilience Settings for High-Memory System with Anti-Blocking
 # More aggressive retry configuration
@@ -49,20 +56,20 @@ RETRY_HTTP_CODES = [500, 502, 503, 504, 408, 429, 403]  # Include 403 in retries
 HTTPERROR_ALLOWED_CODES = [403, 404, 429, 500, 502, 503, 504]
 
 # Smart delays - more respectful to avoid blocks
-DOWNLOAD_DELAY = 3  # Increased delay between requests
-RANDOMIZE_DOWNLOAD_DELAY = 0.5  # 0.5 * to 1.5 * DOWNLOAD_DELAY (1.5s to 4.5s)
-DOWNLOAD_TIMEOUT = 60  # Longer timeout for large files
+DOWNLOAD_DELAY = 10  # Increased delay between requests
+RANDOMIZE_DOWNLOAD_DELAY = 1.0  # (10s to 20s)
+DOWNLOAD_TIMEOUT = 120  # Longer timeout for large files
 
 # Reduced concurrency to avoid overwhelming sites
-CONCURRENT_REQUESTS = 100  # Reduced from 16
-CONCURRENT_REQUESTS_PER_DOMAIN = 1  # Reduced from 3
-REACTOR_THREADPOOL_MAXSIZE = 20
+CONCURRENT_REQUESTS = 1  # Reduced from 100
+CONCURRENT_REQUESTS_PER_DOMAIN = 1  # Reduced from 1
+REACTOR_THREADPOOL_MAXSIZE = 10
 
 # Smart AutoThrottle - backs off automatically when sites get unhappy
 AUTOTHROTTLE_ENABLED = True
-AUTOTHROTTLE_START_DELAY = 1
-AUTOTHROTTLE_MAX_DELAY = 15  # Back off significantly if needed
-AUTOTHROTTLE_TARGET_CONCURRENCY = 4.0  # Conservative target
+AUTOTHROTTLE_START_DELAY = 5
+AUTOTHROTTLE_MAX_DELAY = 60  # Back off significantly if needed
+AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0  # Conservative target
 AUTOTHROTTLE_DEBUG = False
 
 # Advanced anti-blocking measures
@@ -75,18 +82,22 @@ MEMUSAGE_ENABLED = False  # Disable memory monitoring entirely
 # Enable response caching for better performance
 HTTPCACHE_ENABLED = True
 HTTPCACHE_EXPIRATION_SECS = 3600  # Cache for 1 hour
-HTTPCACHE_DIR = 'httpcache'
+# Use unique cache directory per crawler instance to avoid conflicts
+HTTPCACHE_DIR = f'httpcache_{CRAWL_MODE}'
 HTTPCACHE_IGNORE_HTTP_CODES = [503, 504, 505, 500, 429, 403]
 
 SCHEDULER_PRIORITY_QUEUE = "scrapy.pqueues.DownloaderAwarePriorityQueue"
+# Use memory-only queues to avoid disk queue corruption issues
+SCHEDULER_DISK_QUEUE = 'scrapy.squeues.PickleFifoDiskQueue'
+SCHEDULER_MEMORY_QUEUE = 'scrapy.squeues.FifoMemoryQueue'
 
 # Anti-blocking middleware stack
 DOWNLOADER_MIDDLEWARES = {
     'scrapy.downloadermiddlewares.retry.RetryMiddleware': None,
     'scrapy.downloadermiddlewares.useragent.UserAgentMiddleware': None,
     'scrapy_fake_useragent.middleware.RandomUserAgentMiddleware': 400,
-    'scrapy_fake_useragent.middleware.RetryUserAgentMiddleware': 401,
-    'lookingglass_crawler.resilient_proxy_middleware.ResilientProxyMiddleware': 110,
+    # 'scrapy_fake_useragent.middleware.RetryUserAgentMiddleware': 401,
+    # 'lookingglass_crawler.resilient_proxy_middleware.ResilientProxyMiddleware': 110,
     'scrapy.downloadermiddlewares.httpcompression.HttpCompressionMiddleware': 120,
 }
 
@@ -106,8 +117,8 @@ PROXY_LIST = 'proxies.txt'
 # User agent rotation is now handled by RotateUserAgentMiddleware
 # No need for static user agent list
 
-# Logging configuration - error level only (user preference)
-LOG_LEVEL = 'ERROR'  # Only show errors
+# Logging configuration - INFO level for crawler to see what's happening
+LOG_LEVEL = 'INFO'  # Show info level logs to debug crawler behavior
 LOG_FILE = None  # Log to stdout
 
 # Duplication filter
@@ -118,6 +129,13 @@ CLOSESPIDER_ERRORCOUNT = 0  # Don't close on errors
 CLOSESPIDER_PAGECOUNT = 0   # Don't close on page count
 CLOSESPIDER_ITEMCOUNT = 0   # Don't close on item count
 CLOSESPIDER_TIMEOUT = 0     # Don't close on timeout
+
+# Loop Prevention & Depth Limits
+# Prevents getting stuck in infinite loops (e.g. calendars, infinite pagination)
+DEPTH_LIMIT = os.getenv('DEPTH_LIMIT', 10) # 0 = no limit
+DEPTH_PRIORITY = 1 # Breadth-first search (process all links at depth 1 before depth 2)
+# SCHEDULER_DISK_QUEUE = 'scrapy.squeues.PickleFifoDiskQueue'
+# SCHEDULER_MEMORY_QUEUE = 'scrapy.squeues.FifoMemoryQueue'
 
 # Playwright specific settings - Undetected version for maximum stealth
 PLAYWRIGHT_BROWSER_TYPE = 'chromium'

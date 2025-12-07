@@ -14,7 +14,7 @@ class MinioMediaPipeline:
     """
     def __init__(self, settings):
         self.minio_client = Minio(
-            settings.get('MINIO_ENDPOINT', 'minio:9000'),
+            settings.get('MINIO_ENDPOINT', 'localhost:9000'),
             access_key=settings.get('MINIO_USER', 'minioadmin'),
             secret_key=settings.get('MINIO_PASSWORD', 'miniopassword'),
             secure=False

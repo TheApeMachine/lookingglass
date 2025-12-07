@@ -45,6 +45,7 @@ class ResilientProxyMiddleware:
             proxy = random.choice(self.proxy_list)
             if proxy:
                 request.meta['proxy'] = proxy
+                # Removed Authorization header since these are free proxies
         except Exception as e:
             # Never fail - just log and continue without proxy
             logger.warning(f"Proxy selection failed, continuing without proxy: {e}")

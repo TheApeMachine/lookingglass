@@ -1,54 +1,61 @@
 # Core web framework
-flask
-gunicorn
-werkzeug
+flask==3.1.2
+gunicorn==23.0.0
+werkzeug==3.1.4
+flask-cors==6.0.1
 
-# Essential packages first - pin numpy to avoid compatibility issues
-wheel
-setuptools
-numpy==1.24.3
-pillow
+# Essential packages
+wheel==0.45.1
+setuptools==80.9.0
+numpy<2.0.0
+pillow==11.3.0
 
-# Computer vision and ML (install in order to avoid conflicts)
-opencv-python-headless
+# Computer vision and ML
+opencv-python-headless==4.10.0.84
 face_recognition==1.3.0
 
-# GPU-accelerated libraries (compatible versions)
-torch==2.2.0 --index-url https://download.pytorch.org/whl/cu118
-torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu118
-torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118
+# PyTorch (Native/MPS)
+torch==2.9.1
+torchvision==0.24.1
+torchaudio==2.9.1
 
-# TensorFlow (2.12.x links against cuDNN 8.5 which matches PyTorch 2.0.1 binaries)
-tensorflow==2.11.1
-keras==2.11.0
+# TensorFlow for macOS (Metal Support)
+# Per Apple Developer docs:
+# - Use 'tensorflow' for TF 2.13+
+# - Use 'tensorflow-macos' for TF 2.12 or earlier (deprecated)
+# - Install 'tensorflow-metal' plugin for GPU acceleration
+tf-keras==2.16.0
+tensorflow==2.16.2
+tensorflow-metal==1.2.0
+keras==3.4.1
 
-# Face detection and recognition (compatible versions)
-retina-face==0.0.17
+# Face detection
+retina-face>=0.0.17
 
-# Vector database and search
-faiss-gpu==1.7.2
-qdrant-client
+# Data Lake & Vector Search
+deeplake==4.4.2
+boto3==1.42.3
 
 # Media processing
-moviepy
-imageio
-imageio-ffmpeg
+moviepy==2.2.1
+imageio==2.37.2
+imageio-ffmpeg==0.6.0
 
-# Audio processing (compatible version)
-speechbrain
+# Audio processing
+speechbrain==1.0.3
 
 # NLP and graph
-gliner==0.1.12
-neo4j==5.19.0
+gliner==0.2.24
+neo4j==6.0.3
 
 # Relation extraction
-transformers==4.41.0
-sentencepiece
+transformers==4.57.3
+sentencepiece==0.2.1
 
 # File monitoring and storage
-watchdog
-minio
+watchdog==6.0.0
+minio==7.2.20
 
 # Task queue
-rq
-redis
+rq==2.6.1
+redis==7.1.0

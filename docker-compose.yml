@@ -1,145 +1,4 @@
-services:
-  rq-worker-1:
-    build: ./gpu-service
-    command: >
-      bash -c "
-        while ! redis-cli -h redis -p 6379 ping | grep -q PONG; do
-          echo 'Waiting for redis...'
-          sleep 1
-        done
-        echo 'Redis is up, starting worker.'
-        rq worker --url redis://redis:6379 --name facial_recognition_gpu1 --with-scheduler
-      "
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-      - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-      - MINIO_BUCKET=scraped
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - QDRANT_API_KEY=qdrantapikey
-      - QUEUE_NAMES=facial_recognition
-      - CUDA_VISIBLE_DEVICES=1
-    volumes:
-      - ./transcriptions:/app/transcriptions
-    depends_on:
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_started
-      qdrant:
-        condition: service_started
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['1']
-              capabilities: [gpu]
-
-  rq-worker-2:
-    build: ./gpu-service
-    command: >
-      bash -c "
-        while ! redis-cli -h redis -p 6379 ping | grep -q PONG; do
-          echo 'Waiting for redis...'
-          sleep 1
-        done
-        echo 'Redis is up, starting worker.'
-        rq worker --url redis://redis:6379 --name facial_recognition_gpu2 --with-scheduler
-      "
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-      - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-      - MINIO_BUCKET=scraped
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - QDRANT_API_KEY=qdrantapikey
-      - QUEUE_NAMES=facial_recognition
-      - CUDA_VISIBLE_DEVICES=2
-    volumes:
-      - ./transcriptions:/app/transcriptions
-    depends_on:
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_started
-      qdrant:
-        condition: service_started
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['2']
-              capabilities: [gpu]
-
-  gpu-service:
-    build: ./gpu-service
-    ports:
-      - "5001:5001"
-    environment:
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - QDRANT_API_KEY=qdrantapikey
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-      - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-      - MINIO_BUCKET=scraped
-      - CUDA_VISIBLE_DEVICES=0
-    depends_on:
-      - qdrant
-      - minio
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['0']
-              capabilities: [gpu]
-
-  lookup:
-    build: ./lookup
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./lookup:/app # Keeps source code in sync for dev
-    environment:
-      - GPU_WORKER_URL=http://gpu-service:5001/lookup
-    depends_on:
-      - gpu-service
-
-  crawler1:
-    build: ./crawler
-    # This service no longer needs to mount a volume, as all data goes to MinIO
-    environment:
-      - START_URL=https://www.southpole.com/about-us/our-leadership-team
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-      - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-      - MINIO_BUCKET=scraped
-    depends_on:
-      - minio
-    restart: unless-stopped
-    # Single crawler with smart concurrency management
-
-  crawler2:
-    build: ./crawler
-    environment:
-      - START_URL=https://icvcm.org/about-us/meet-the-team
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=${MINIO_ROOT_USER:-miniouser}
-      - MINIO_PASSWORD=${MINIO_ROOT_PASSWORD:-miniopassword}
-      - MINIO_BUCKET=scraped
-    depends_on:
-      - minio
-    restart: unless-stopped
-    # Single crawler with smart concurrency management
-  
+services:  
   redis:
     image: redis:8.2-rc1-bookworm
     container_name: redis
@@ -160,58 +19,12 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
       - MINIO_ROOT_USER=miniouser
       - MINIO_ROOT_PASSWORD=miniopassword
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
-
-  qdrant:
-    image: qdrant/qdrant
-    container_name: qdrant
-    restart: unless-stopped
-    environment:
-      - QDRANT__SERVICE__API_KEY=qdrantapikey
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - 6333:6333
-      - 6334:6334
-    volumes:
-      - qdrant_storage:/qdrant/storage
-
-  analytics-worker:
-    build: ./graph-service
-    environment:
-      - NEO4J_HOST=neo4j
-      - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=password
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=miniouser
-      - MINIO_PASSWORD=miniopassword
-      - MINIO_BUCKET=scraped
-    depends_on:
-      - neo4j
-    restart: unless-stopped
-
-  graph-page-worker:
-    build: ./graph-service
-    command: ["python", "page_worker.py"]
-    environment:
-      - NEO4J_HOST=neo4j
-      - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=password
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_USER=miniouser
-      - MINIO_PASSWORD=miniopassword
-      - MINIO_BUCKET=scraped
-    depends_on:
-      - neo4j
-      - minio
-    restart: unless-stopped
 
   neo4j:
     image: neo4j:latest
@@ -238,10 +51,8 @@ services:
       start_period: 30s
 
 volumes:
-  qdrant_storage:
   neo4j_data:
   neo4j_logs:
   neo4j_conf:
   minio_data:
-  transcriptions:
   redis_data:
